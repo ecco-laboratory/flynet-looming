@@ -1,13 +1,15 @@
-name: /Users/mthieu/Repos/emonet-py/env
+name: /home/mthieu/Repos/emonet-py/env
 channels:
   - defaults
+  - conda-forge
 dependencies:
-  - onnx
-  - scikit-learn
   - pandas
   - seaborn
+  - onnx
   - pillow
   - numpy
-  - pycocotools
   - onnxruntime
-prefix: /Users/mthieu/Repos/emonet-py/env
+  - scikit-learn
+  - pycocotools
+  - onnx2torch
+prefix: /home/mthieu/Repos/emonet-py/env
