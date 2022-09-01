@@ -12,4 +12,5 @@ dependencies:
   - scikit-learn
   - pycocotools
   - onnx2torch
+  - ipykernel
 prefix: /home/mthieu/Repos/emonet-py/env
