@@ -1,3 +1,9 @@
+# %% [markdown]
+# The ONNX runtime doesn't train models, only generates predictions.
+# But it's very lightweight and fast at this!
+# So if we just want ready predictions out of pre-trained EmoNet, 
+# we don't have to change the ONNX model into any other formats.
+
 # %%
 # import shit
 
