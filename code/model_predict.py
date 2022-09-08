@@ -7,17 +7,17 @@
 # %%
 # import shit
 
-# import torch (NOT YET...)
-import numpy as np
-import pandas as pd
 from ast import literal_eval
+
+import matplotlib.pyplot as plt
+import numpy as np
 import onnx
 import onnxruntime as ort
-from pycocotools.coco import COCO
-from sklearn.manifold import TSNE
-import matplotlib.pyplot as plt
+import pandas as pd
 import seaborn as sns
 from image_utils import *
+from pycocotools.coco import COCO
+from sklearn.manifold import TSNE
 
 emonet_path = '../ignore/models/EmoNet.onnx'
 # this only works on the server rn bc the NSD stuff is only saved there
