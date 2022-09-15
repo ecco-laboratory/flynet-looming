@@ -6,6 +6,7 @@ import torch
 import torchvision
 from image_utils import NSDDataset
 from torch import nn
+from torchvision import transforms
 
 emonet_path = '../ignore/models/EmoNet.pt'
 nsd_path = '/data/eccolab/Code/NSD/'
@@ -16,6 +17,9 @@ alexnet_lrn_alpha = 9.999999747378752e-05
 # because it comes out slightly diff from Matlab. Lol
 class EmoNet(nn.Module):
     def __init__(self, num_classes: int = 20) -> None:
+        # This creates the classes that will come in from the onnx2torch dict
+        # Every parameter has to match for it to read in
+        # So we need stuff like the weight initializers, which I think don't actually matter for inference
         super().__init__()
         # TODO: still needs the onnx initializer, whatever that thing is
         # Initialized with an empty module?
@@ -66,10 +70,38 @@ class EmoNet(nn.Module):
         # I feel like they are equivalent when the nodes coming in are 1x1px
         # but this feels hackier somehow. Matlab! Dum dum!
         self.Conv_7 = nn.Conv2d(4096, 20, kernel_size=1, stride=1)
-        self.Flatten_0 = nn.Flatten(),
+        self.Flatten_0 = nn.Flatten()
         self.Softmax_0 = nn.Softmax(dim=-1)
             
         # TODO: What happens when ReLU is inplace vs not (as ONNX import)?
+    
+    def forward(self, x: torch.Tensor):
+        # This is the one that actually EXECUTES the model
+        # Don't pass through the initializers module because... it doesn't DO anything to the data
+        x = x.to(torch.float)
+        x = self.Conv_0(x)
+        x = self.Relu_0(x)
+        x = self.LRN_0(x)
+        x = self.MaxPool_0(x)
+        x = self.Conv_1(x)
+        x = self.Relu_1(x)
+        x = self.LRN_1(x)
+        x = self.MaxPool_1(x)
+        x = self.Conv_2(x)
+        x = self.Relu_2(x)
+        x = self.Conv_3(x)
+        x = self.Relu_3(x)
+        x = self.Conv_4(x)
+        x = self.Relu_4(x)
+        x = self.MaxPool_2(x)
+        x = self.Conv_5(x)
+        x = self.Relu_5(x)
+        x = self.Conv_6(x)
+        x = self.Relu_6(x)
+        x = self.Conv_7(x)
+        x = self.Flatten_0(x)
+        x = self.Softmax_0(x)
+        return x
 
 # %%
 # Define hook functions to get intermediate activations
@@ -105,13 +137,23 @@ for name, mod in emonet_torch.named_modules():
 # because the NSD images come pre-cropped and with their own metadata
 # It doesn't take that long because HDF5 lazy-load! Yay, I think
 # Gotta resize to 227x227 because that's how AlexNet from Matlab likes things
+# But do NOT rescale RGB to 0-1 because AlexNet from Matlab likes 0-255
 # TODO: Figure out if we need to use any of the image caching I saw in that guy's GitHub Gist
+nsd_transform = transforms.Compose([
+                        transforms.Resize((227, 227)),
+                        transforms.PILToTensor()
+                        ])
+
 nsd_torchdata = NSDDataset(root=nsd_path+'stimuli/',
-                      annFile=nsd_path+'nsd_stim_info_merged.csv',
-                      transform=torchvision.transforms.Resize((227, 227)))
+                           annFile=nsd_path+'nsd_stim_info_merged.csv',
+                           transform=nsd_transform)
 
 # %%
 # Initialize ze DataLoader
 # Only needed once we're aggressively iterating through all the images?
-nsd_loader = torch.utils.data.DataLoader(nsd_torchdata)
+nsd_torchloader = torch.utils.data.DataLoader(nsd_torchdata)
+# %%
+# DO IT?!
+emonet_torch.eval()
+
 # %%
