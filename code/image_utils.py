@@ -63,6 +63,7 @@ class NSDDataset(VisionDataset):
     Args:
         root (string): Folder where hdf5 file is downloaded to.
         annFile (string): Path to CSV annotation file.
+        shared1000 (boolean): Run using the subset of stimuli that all participants saw? Defaults to False (all 73000 possible stimuli).
         transform (callable, optional): A function/transform that  takes in an PIL image
             and returns a transformed version. E.g, ``transforms.PILToTensor``
         target_transform (callable, optional): A function/transform that takes in the
@@ -74,7 +75,8 @@ class NSDDataset(VisionDataset):
 
     def __init__(self,
                  root: str,
-                 annFile = str,
+                 annFile: str,
+                 shared1000: bool = False,
                  transform: Optional[Callable] = None, 
                  target_transform: Optional[Callable] = None,
                  transforms: Optional[Callable] = None
@@ -87,8 +89,11 @@ class NSDDataset(VisionDataset):
         # convert cropBox so it reads in as a tuple, not a string of the tuple
 
         self.metadata = pd.read_csv(annFile, converters = {'cropBox': literal_eval})
+        self.metadata = self.metadata.set_index('Unnamed: 0')
+        if shared1000:
+            self.metadata = self.metadata.query('shared1000')
         self.hdf = h5py.File(self.root + 'nsd_stimuli.hdf5')
-        self.ids = self.metadata['Unnamed: 0'].to_list()
+        self.ids = self.metadata.index.to_list()
         self.transform = transform
         self.target_transform = target_transform
     
@@ -99,7 +104,7 @@ class NSDDataset(VisionDataset):
         return image
     
     def _load_target(self, id: int) -> List[Any]:
-        return self.metadata.iloc[id].to_dict()
+        return self.metadata.loc[id].to_dict()
 
     def __getitem__(self, index: int) -> Tuple[Any, Any]:
         id = self.ids[index]
