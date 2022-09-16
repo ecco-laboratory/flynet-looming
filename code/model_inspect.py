@@ -1,5 +1,6 @@
 # %%
 # imports
+import platform
 
 import pandas as pd
 import torch
@@ -7,9 +8,16 @@ import torchvision
 from image_utils import NSDDataset
 from torch import nn
 from torchvision import transforms
+from tqdm import tqdm
+
+# %%
+# Set abs paths based on which cluster node we're on
+base_path = '/data/eccolab/'
+if platform.node() != 'ecco':
+    base_path = '/home'+base_path
 
 emonet_path = '../ignore/models/EmoNet.pt'
-nsd_path = '/data/eccolab/Code/NSD/'
+nsd_path = base_path+'Code/NSD/'
 # %%
 # initialize EmoNet class with correct param settings
 alexnet_lrn_alpha = 9.999999747378752e-05
@@ -49,7 +57,7 @@ class EmoNet(nn.Module):
         self.Conv_1 = nn.Conv2d(96, 256, kernel_size=5, stride=1, padding=2, groups=2)
         self.Relu_1 = nn.ReLU()
         self.LRN_1 = nn.LocalResponseNorm(size=5, alpha=alexnet_lrn_alpha, beta=0.75, k=1)
-        self.MaxPool_1 = nn.MaxPool2d(kernel_size=3, stride=1, padding=0, dilation=1, ceil_mode=False)
+        self.MaxPool_1 = nn.MaxPool2d(kernel_size=3, stride=2, padding=0, dilation=1, ceil_mode=False)
         # and again, a few rounds of channels going up, pixels staying the same
         self.Conv_2 = nn.Conv2d(256, 384, kernel_size=3, stride=1, padding=1)
         self.Relu_2 = nn.ReLU()
@@ -69,7 +77,7 @@ class EmoNet(nn.Module):
         # AlexNet that comes with torchvision has this as a Linear module, not Conv2d
         # I feel like they are equivalent when the nodes coming in are 1x1px
         # but this feels hackier somehow. Matlab! Dum dum!
-        self.Conv_7 = nn.Conv2d(4096, 20, kernel_size=1, stride=1)
+        self.Conv_7 = nn.Conv2d(4096, num_classes, kernel_size=1, stride=1)
         self.Flatten_0 = nn.Flatten()
         self.Softmax_0 = nn.Softmax(dim=-1)
             
@@ -112,7 +120,7 @@ def cache_layer_activation(name):
     def hook(model, input, output):
         # TODO: Figure out how to get this to return the detached output
         # instead of doing this as a side effect
-        activations[name] = output.detach()
+        activations[name] = output.detach().numpy()
     return hook
 
 # %%
@@ -129,7 +137,8 @@ for param in emonet_torch.parameters():
 
 # Register the dang hooks to pull intermediate activations
 for name, mod in emonet_torch.named_modules():
-    mod.register_forward_hook(cache_layer_activation(name))
+    if name.startswith('Conv'):
+        mod.register_forward_hook(cache_layer_activation(name))
 
 # %%
 # Preload ze NSD image data
@@ -146,14 +155,45 @@ nsd_transform = transforms.Compose([
 
 nsd_torchdata = NSDDataset(root=nsd_path+'stimuli/',
                            annFile=nsd_path+'nsd_stim_info_merged.csv',
+                           shared1000=True,
                            transform=nsd_transform)
 
 # %%
-# Initialize ze DataLoader
-# Only needed once we're aggressively iterating through all the images?
-nsd_torchloader = torch.utils.data.DataLoader(nsd_torchdata)
+# Initialize ze DataLoader to actually feed into the model
+
+#
+batch_size = 10
+nsd_torchloader = torch.utils.data.DataLoader(nsd_torchdata, batch_size=batch_size)
 # %%
-# DO IT?!
+# DO IT?! RUN IT! GET PREDS
 emonet_torch.eval()
+
+# Yeah I think we should set this to empty dict again just in case
+# It needs to be initalized earlier for that function to work I think
+# but for safety, re-set it to empty before every pass of the model
+# TODO: Write this to preallocate so we can copy into Tensor slice and go more pythonically
+activations_all = {
+    'Conv_0': [],
+    'Conv_1': [],
+    'Conv_2': [],
+    'Conv_3': [],
+    'Conv_4': [],
+    'Conv_5': [],
+    'Conv_6': [],
+    'Conv_7': [],
+    }
+activations = {}
+preds_all = []
+pred = []
+
+for img, lab in tqdm(nsd_torchloader):
+    pred = emonet_torch(img)
+    preds_all.append(pred.numpy())
+    for layer in activations_all.keys():
+        activations_all[layer].append(activations[layer])
+
+    # Clear out activations before next img
+    activations = {}
+
 
 # %%
