@@ -2,6 +2,7 @@
 # imports
 import platform
 
+import numpy as np
 import pandas as pd
 import torch
 import torchvision
@@ -195,5 +196,42 @@ for img, lab in tqdm(nsd_torchloader):
     # Clear out activations before next img
     activations = {}
 
+
+# %%
+# Get output arrays into 2D form with one row per stimulus
+preds_all = np.concatenate(preds_all, axis=0)
+
+for layer in activations_all.keys():
+    # reshape each batch to 2d
+    activations_all[layer] = [act.reshape(batch_size, -1) for act in activations_all[layer]]
+    # once each is internally 2d, unnest longer by concatenating
+    activations_all[layer] = np.concatenate(activations_all[layer], axis=0)
+
+# %%
+# Generate correlation matrices
+
+cormats = {
+    'Conv_0': [],
+    'Conv_1': [],
+    'Conv_2': [],
+    'Conv_3': [],
+    'Conv_4': [],
+    'Conv_5': [],
+    'Conv_6': [],
+    'Conv_7': [],
+    }
+
+# corrcoef does actually expect observations to go by rows as default
+for layer in cormats.keys():
+    cormats[layer] = np.corrcoef(activations_all[layer])
+
+# %%
+# Write correlation matrices out teehee
+
+for layer in tqdm(cormats.keys()):
+    np.savetxt('../ignore/outputs/emonet_torch_cormat_layer_{}.txt'.format(layer),
+               cormats[layer],
+               fmt='%.9f',
+               delimiter=',')
 
 # %%
