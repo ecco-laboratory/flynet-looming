@@ -7,6 +7,7 @@
 # %%
 # import shit
 
+import platform
 from ast import literal_eval
 
 import matplotlib.pyplot as plt
@@ -19,9 +20,15 @@ from image_utils import *
 from pycocotools.coco import COCO
 from sklearn.manifold import TSNE
 
+# %%
+# Set abs paths based on which cluster node we're on
+base_path = '/data/eccolab/'
+if platform.node() != 'ecco':
+    base_path = '/home'+base_path
+
 emonet_path = '../ignore/models/EmoNet.onnx'
 # this only works on the server rn bc the NSD stuff is only saved there
-nsd_path = '/data/eccolab/Code/NSD/'
+nsd_path = base_path+'Code/NSD/'
 # %% 
 # A tensor is like an array, but safe for consumption by modeling thingies
 emonet_onnx = onnx.load(emonet_path)
