@@ -7,6 +7,7 @@ import h5py
 import numpy as np
 import pandas as pd
 import requests
+import torchvision
 from PIL import Image
 from torchvision.datasets import VisionDataset
 
@@ -51,6 +52,100 @@ def cropbox_nsd_to_pillow(size, cropbox):
         right = size[0]
     
     return (left, upper, right, lower)
+
+# %%
+# Hot and sexy torch Dataset class for Alan's videos
+
+class Cowen2017Dataset(VisionDataset):
+    """`Cowen & Keltner (2017) <https://www.pnas.org/doi/full/10.1073/pnas.1702247114>` PyTorch-style Dataset.
+
+    This dataset returns each video as a 4D tensor.
+
+    Args:
+        root (string): Enclosing folder where videos are located on the local machine.
+        annFile (string): Path to directory of metadata/annotation CSVs.
+        censorFile (boolean, optional): Censor Alan's "bad" videos? Defaults to True.
+        train (boolean, optional): If True, creates dataset from Kragel et al. (2019)'s training set, otherwise
+            from the testing set. Defaults to True.
+        transform (callable, optional): A function/transform that  takes in an PIL image
+            and returns a transformed version. E.g, ``transforms.PILToTensor``
+        target_transform (callable, optional): A function/transform that takes in the
+            target and transforms it.
+        transforms (callable, optional): A function/transform that takes input sample and its target as entry
+            and returns a transformed version.
+    """
+
+    def __init__(self,
+                 root: str,
+                 annPath: str,
+                 censor: bool = True,
+                 train: bool = True,
+                 transforms: Optional[Callable] = None,
+                 transform: Optional[Callable] = None,
+                 target_transform: Optional[Callable] = None) -> None:
+        super().__init__(root, transforms, transform, target_transform)
+
+        import os
+
+        import pandas as pd
+
+        self.train = train
+        these_videos = pd.read_csv(os.path.join(annPath, f"{'train' if self.train else 'test'}_video_ids.csv"),
+                                   index_col='video')
+
+        # Read in the Cowen & Keltner metadata
+
+        self.metadata = pd.read_csv(os.path.join(annPath, 'video_ratings.csv'),
+                                    index_col='Filename')
+        
+        # Just the emotion categories
+        self.metadata = self.metadata.iloc[:, range(34)]
+
+        # attach the pre-computed "winning" class labels
+        # Include only the designated training or testing set
+        # Using join as an implicit filter kills 2 tasks with one command
+        self.metadata = self.metadata.join(these_videos, how='right')
+        
+        if censor:
+            # Truly I wish this was in long form but Alan doesn't like tidy data does he
+            censored = pd.read_csv(os.path.join(annPath, 'censored_video_ids.csv'))
+            # We don't need to see the censored ones! At least I personally don't
+            # I guess the model doesn't have feelings
+            self.metadata = self.metadata[~self.metadata.index.isin(censored['less.bad'])]
+            self.metadata = self.metadata[~self.metadata.index.isin(censored['very.bad'])]
+
+        self.ids = self.metadata.index.to_list()
+    
+    def _load_video(self, id: str):
+        import os
+
+        video = torchvision.io.read_video(os.path.join(self.root, self.metadata.loc[id]['emotion'], id),
+                                          pts_unit='sec')
+        # None of the videos have audio, so discard that from the loaded tuple
+        # Also for convenience, discard dict labeling fps so that the videos look like 4D imgs
+        video = video[0]
+        # with dims frames x channels x height x width ... which is NOT the default order!
+        video = video.permute((0, 3, 1, 2))
+
+        return video
+    
+    def _load_target(self, id: str) -> List[Any]:
+        target = self.metadata.loc[id].to_dict()
+        target['id'] = id
+        return target
+    
+    def __getitem__(self, index: int) -> Tuple[Any, Any]:
+        id = self.ids[index]
+        video = self._load_video(id)
+        target = self._load_target(id)
+
+        if self.transforms is not None:
+            video, target = self.transforms(video, target)
+
+        return video, target
+
+    def __len__(self) -> int:
+        return len(self.ids)
 
 # %%
 # Let me create myself a goddamn torch Dataset class for NSD
@@ -118,7 +213,7 @@ class NSDDataset(VisionDataset):
 
     
     def __len__(self) -> int:
-        return (len(self.ids))
+        return len(self.ids)
 # %%
 # torchvision cocodetection but it reads from web (cursed?)
 
