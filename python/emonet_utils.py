@@ -212,8 +212,9 @@ class EmoNetHeadlessVideo(nn.Module):
     def forward(self, x: torch.Tensor):
         # This is the one that actually EXECUTES the model
         x = x.to(torch.float)
-
-        output = torch.zeros((x.size(0), x.size(1), 4096))
+        # I don't know how to preallocate this and then assign by slicing
+        # so we'll start with an empty one and then concatenate onto it
+        output = torch.Tensor()
 
         # loop over FRAMES
         # Weirdly, I think this works by processing the nth frame from each batch simultaneously
@@ -233,10 +234,17 @@ class EmoNetHeadlessVideo(nn.Module):
             x_t = self.conv_5(x_t)
             # After this layer, activation dims should be batch x 4096
             x_t = self.conv_6(x_t)
-            x_t.squeeze()
+            print('iteration:', t)
+            print('size of x_t before squeezing:', x_t.size())
+            x_t = x_t.squeeze()
+            print('size of x_t after squeezing:', x_t.size())
             # again, might need to unsqueeze the batch dimension
             if x_t.dim() == 1:
                 x_t = x_t.unsqueeze(0)
-            output[:, t, :] = x_t
+            # Need to fencepost this because stack() won't stack onto an empty tensor
+            if t == 0:
+                output = x_t
+            else:
+                output = torch.stack((output, x_t))
 
         return output

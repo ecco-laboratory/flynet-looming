@@ -1,6 +1,7 @@
 # %%
 # imports
 from io import BytesIO
+from turtle import forward
 from typing import Any, Callable, List, Optional, Tuple
 
 import h5py
@@ -10,6 +11,7 @@ import requests
 import torchvision
 from PIL import Image
 from torchvision.datasets import VisionDataset
+from torchvision.transforms import functional as F
 
 # %%
 # read_and_preprocess_image
@@ -52,7 +54,22 @@ def cropbox_nsd_to_pillow(size, cropbox):
         right = size[0]
     
     return (left, upper, right, lower)
+# %%
+class ResizeVideo(torchvision.transforms.Resize):
+    def __init__(self, size, interpolation=F.InterpolationMode.BILINEAR, max_size=None, antialias=None):
+        super().__init__(size, interpolation, max_size, antialias)
+    
+    def forward(self, vid):
+        """
+        Args:
+            vid (torchvision video from read_video): Video to be scaled.
 
+        Returns:
+            Video: torchvision video with frames rescaled.
+        """
+        frames = vid[0]
+        frames = F.resize(vid[0], self.size, self.interpolation, self.max_size, self.antialias)
+        return (frames, vid[1], vid[2])
 # %%
 # Hot and sexy torch Dataset class for Alan's videos
 
@@ -123,15 +140,18 @@ class Cowen2017Dataset(VisionDataset):
                                           pts_unit='sec')
         # None of the videos have audio, so discard that from the loaded tuple
         # Also for convenience, discard dict labeling fps so that the videos look like 4D imgs
-        video = video[0]
+        # video = video[0]
         # with dims frames x channels x height x width ... which is NOT the default order!
-        video = video.permute((0, 3, 1, 2))
+        frames = video[0].permute((0, 3, 1, 2))
+
+        video = (frames, video[1], video[2])
 
         return video
     
     def _load_target(self, id: str) -> List[Any]:
         target = self.metadata.loc[id].to_dict()
         target['id'] = id
+        
         return target
     
     def __getitem__(self, index: int) -> Tuple[Any, Any]:
@@ -193,13 +213,20 @@ class NSDDataset(VisionDataset):
         self.target_transform = target_transform
     
     def _load_image(self, id: int) -> Image.Image:
-
         image = Image.fromarray(self.hdf['imgBrick'][id])
+
+        if self.transform is not None:
+            image = self.transform(image)
 
         return image
     
     def _load_target(self, id: int) -> List[Any]:
-        return self.metadata.loc[id].to_dict()
+        target = self.metadata.loc[id].to_dict()
+
+        if self.target_transform is not None:
+            target = self.target_transform(target)
+
+        return target
 
     def __getitem__(self, index: int) -> Tuple[Any, Any]:
         id = self.ids[index]
