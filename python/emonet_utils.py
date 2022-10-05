@@ -11,6 +11,37 @@ from torch import nn
 from torchvision.datasets import VisionDataset
 
 # %%
+# Instantiate my shitty little GRU RNN with linear-to-softmax predictor
+
+class GRUClassifier(nn.Module):
+
+    def __init__(
+        self,
+        input_size: int=4096,
+        hidden_size: int=110,
+        num_classes: int=20
+    ) -> None:
+        super(GRUClassifier, self).__init__()
+
+        self.gru = nn.GRU(input_size=input_size, hidden_size=hidden_size)
+        # I guess I could do this to two linear layers and call that bitch a perceptron
+        # Not right now though
+        self.classifier = nn.Sequential(
+            nn.Linear(in_features=hidden_size, out_features=num_classes),
+            nn.Softmax(dim=-1)
+        )
+
+    def forward(self, x):
+        # We don't care about the last hidden state
+        x, _ = self.gru(x)
+        # Unpack the sequence, and... hopefully this is safe... throw away video lengths
+        x = nn.utils.rnn.pad_packed_sequence(x, batch_first=True)
+        x = self.classifier(x[0])
+ 
+        return x
+
+    
+# %%
 # instantiate emonet (from onnx) pytorch class :3
 
 # Can't use torchvision.models.AlexNet()
