@@ -1,17 +1,12 @@
 # %%
 # imports
 from io import BytesIO
-from turtle import forward
-from typing import Any, Callable, List, Optional, Tuple, Union
 
-import h5py
 import numpy as np
-import pandas as pd
 import requests
 import torch
 import torchvision
 from PIL import Image
-from torch import Tensor
 from torchvision.transforms import functional as F
 
 # %%
@@ -56,11 +51,17 @@ def cropbox_nsd_to_pillow(size, cropbox):
     
     return (left, upper, right, lower)
 # %%
-# pad_sequence() with batch_size fixed to True for feeding in as collate_fn to DataLoader
-def pad_sequence_batch_first(
-    sequences: Union[Tensor, List[Tensor]]
-    ) -> Tensor:
-    return torch.nn.utils.rnn.pad_sequence(sequences, batch_first=True)
+# pad_sequence() but augmented for feeding in as collate_fn to DataLoader:
+# Expects a 2-tuple with the 4D video tensor in the first slot
+# and labels in the second slot
+# batch_size fixed to True
+# Implementation inspired by https://suzyahyah.github.io/pytorch/2019/07/01/DataLoader-Pad-Pack-Sequence.html
+def pad_sequence_tuple(batch: tuple) -> tuple:
+    frames, labels = zip(*batch)
+    lengths = [vid.size()[0] for vid in frames]
+
+    frames_padded = torch.nn.utils.rnn.pad_sequence(frames, batch_first=True)
+    return frames_padded, lengths, labels
 
 # %%
 # Resize transform but reaches in to pull out the frames from a read_video obj
