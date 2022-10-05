@@ -288,31 +288,20 @@ class Cowen2017Dataset(VisionDataset):
         import pandas as pd
 
         self.train = train
-        these_videos = pd.read_csv(os.path.join(annPath, f"{'train' if self.train else 'test'}_video_ids.csv"),
+
+        # Read in the Cowen & Keltner top-1 "winning" human emotion classes
+        self.labels = pd.read_csv(os.path.join(annPath, f"{'train' if self.train else 'test'}_video_ids.csv"),
                                    index_col='video')
-
-        # Read in the Cowen & Keltner metadata
-
-        self.metadata = pd.read_csv(os.path.join(annPath, 'video_ratings.csv'),
-                                    index_col='Filename')
-        
-        # Just the emotion categories
-        self.metadata = self.metadata.iloc[:, range(34)]
-
-        # attach the pre-computed "winning" class labels
-        # Include only the designated training or testing set
-        # Using join as an implicit filter kills 2 tasks with one command
-        self.metadata = self.metadata.join(these_videos, how='right')
         
         if censor:
             # Truly I wish this was in long form but Alan doesn't like tidy data does he
             censored = pd.read_csv(os.path.join(annPath, 'censored_video_ids.csv'))
             # We don't need to see the censored ones! At least I personally don't
             # I guess the model doesn't have feelings
-            self.metadata = self.metadata[~self.metadata.index.isin(censored['less.bad'])]
-            self.metadata = self.metadata[~self.metadata.index.isin(censored['very.bad'])]
+            self.labels = self.labels[~self.labels.index.isin(censored['less.bad'])]
+            self.labels = self.labels[~self.labels.index.isin(censored['very.bad'])]
 
-        self.ids = self.metadata.index.to_list()
+        self.ids = self.labels.index.to_list()
     
     def _load_video(self, id: str):
         import os
@@ -330,7 +319,7 @@ class Cowen2017Dataset(VisionDataset):
         return frames
     
     def _load_target(self, id: str) -> List[Any]:
-        target = self.metadata.loc[id].to_dict()
+        target = self.labels.loc[id].to_dict()
         target['id'] = id
         
         return target
