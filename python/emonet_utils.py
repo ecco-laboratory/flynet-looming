@@ -1,7 +1,12 @@
 # %%
 # imports per usual
+from typing import Any, Callable, List, Optional, Tuple, Union
+
+import h5py
+import pandas as pd
 import torch
 import torchvision
+from PIL import Image
 from torch import nn
 from torchvision.datasets import VisionDataset
 
@@ -213,43 +218,29 @@ class EmoNetHeadlessVideo(nn.Module):
     
     def forward(self, x: torch.Tensor):
         # This is the one that actually EXECUTES the model
+        # We _shouldn't_ need to do any elaborate looping in this
+        # (No thanks to HHTseng on GitHub, sorry)
+        # because feeding in the data attribute of a PackedSequence
+        # already lines up with the metadata needed to put the predictions back into sequences
+        # using built-in PyTorch utilities
         x = x.to(torch.float)
-        # I don't know how to preallocate this and then assign by slicing
-        # so we'll start with an empty one and then concatenate onto it
-        output = torch.Tensor()
+        x = self.conv_0(x)
+        x = self.conv_1(x)
+        x = self.conv_2(x)
+        x = self.conv_3(x)
+        x = self.conv_4(x)
+        x = self.conv_5(x)
+        x = self.conv_6(x)
+        # Drop the redundant height/width dimensions now that it's 1x1
+        # But keep the batch dimension if it's 1
+        x = x.squeeze()
+        if x.dim() == 1:
+            x = x.unsqueeze(0)
 
         # loop over FRAMES
         # Weirdly, I think this works by processing the nth frame from each batch simultaneously
-        for t in range(x.size(1)):
-            # input dims for a batch of videos:
-            # batch, n frames, channels, height, width
-            x_t = x[:, t, :, :, :].squeeze()
-            # need this because the batch dimension is necessary but will be squeezed if it was 1
-            if x_t.dim() < 4:
-                x_t = x_t.unsqueeze(0)
-            
-            x_t = self.conv_0(x_t)
-            x_t = self.conv_1(x_t)
-            x_t = self.conv_2(x_t)
-            x_t = self.conv_3(x_t)
-            x_t = self.conv_4(x_t)
-            x_t = self.conv_5(x_t)
-            # After this layer, activation dims should be batch x 4096
-            x_t = self.conv_6(x_t)
-            print('iteration:', t)
-            print('size of x_t before squeezing:', x_t.size())
-            x_t = x_t.squeeze()
-            print('size of x_t after squeezing:', x_t.size())
-            # again, might need to unsqueeze the batch dimension
-            if x_t.dim() == 1:
-                x_t = x_t.unsqueeze(0)
-            # Need to fencepost this because stack() won't stack onto an empty tensor
-            if t == 0:
-                output = x_t
-            else:
-                output = torch.stack((output, x_t))
 
-        return output
+        return x
 
 # %%
 # Hot and sexy torch Dataset class for Alan's videos
@@ -290,7 +281,7 @@ class Cowen2017Dataset(VisionDataset):
         self.train = train
 
         # Read in the Cowen & Keltner top-1 "winning" human emotion classes
-        self.labels = pd.read_csv(os.path.join(annPath, f"{'train' if self.train else 'test'}_video_ids.csv"),
+        self.labels = pd.read_csv(os.path.join(annPath, f"{'train' if self.train else 'test'}_video_10fps_ids.csv"),
                                    index_col='video')
         
         if censor:
@@ -306,7 +297,7 @@ class Cowen2017Dataset(VisionDataset):
     def _load_video(self, id: str):
         import os
 
-        video = torchvision.io.read_video(os.path.join(self.root, self.metadata.loc[id]['emotion'], id),
+        video = torchvision.io.read_video(os.path.join(self.root, self.labels.loc[id]['emotion'], id),
                                           pts_unit='sec')
         # None of the videos have audio, so discard that from the loaded tuple
         # Also for convenience, discard dict labeling fps so that the videos look like 4D imgs
