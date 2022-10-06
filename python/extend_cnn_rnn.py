@@ -36,7 +36,7 @@ k19_train = k19_train[k19_train['emotion'].isin(emonet_output_classes)]
 # Get the relative frequencies in alphabetical order
 emonet_class_weights = k19_train['emotion'].value_counts(normalize=True).sort_index()
 # Roudning to 4 digits made them add up to 1. Deal with it
-emonet_class_weights = [round(weight, 4) for weight in emonet_class_weights.to_list()]
+emonet_class_weights = torch.Tensor([round(weight, 4) for weight in emonet_class_weights.to_list()])
 
 # %%
 # Fire up a newer net
@@ -74,6 +74,7 @@ ck_train = Cowen2017Dataset(
     annPath=metadata_path,
     censor=False,
     train=True,
+    device=device,
     transform=these_transforms,
     # A single vector-tensor of indices is what the loss function expects
     target_transform=these_target_transforms
@@ -84,6 +85,7 @@ ck_test = Cowen2017Dataset(
     annPath=metadata_path,
     censor=False,
     train=False,
+    device=device,
     transform=these_transforms,
     target_transform=these_target_transforms
 )
@@ -194,7 +196,7 @@ def test_decoder(dataloader, encoder, decoder, loss_fn):
 emonet_headless.eval()
 
 for epoch in range(n_epochs):
-    print(f"Epoch {t+1}\n-------------------------------")
+    print(f"Epoch {epoch+1}\n-------------------------------")
     train_decoder(
         ck_train_torchloader,
         emonet_headless,
