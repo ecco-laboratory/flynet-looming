@@ -59,6 +59,7 @@ def cropbox_nsd_to_pillow(size, cropbox):
 def pad_sequence_tuple(batch: tuple) -> tuple:
     frames, labels = zip(*batch)
     lengths = [vid.size()[0] for vid in frames]
+    labels = torch.cat(labels)
 
     frames_padded = torch.nn.utils.rnn.pad_sequence(frames, batch_first=True)
     return frames_padded, lengths, labels
