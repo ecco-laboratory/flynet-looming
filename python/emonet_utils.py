@@ -10,6 +10,13 @@ from PIL import Image
 from torch import nn
 from torchvision.datasets import VisionDataset
 
+
+# %%
+# Helper function so the Dataset returns the supa raw emo class label
+def get_target_emotion_index(target):
+    target = emonet_output_classes.index(target['emotion'])
+    return torch.Tensor([target]).to(int)
+
 # %%
 # Instantiate my shitty little GRU RNN with linear-to-softmax predictor
 
@@ -28,7 +35,8 @@ class GRUClassifier(nn.Module):
         # Not right now though
         self.classifier = nn.Sequential(
             nn.Linear(in_features=hidden_size, out_features=num_classes),
-            nn.Softmax(dim=-1)
+            # Need log probabilities for the loss calculator
+            nn.LogSoftmax(dim=-1)
         )
 
     def forward(self, x):
@@ -36,7 +44,13 @@ class GRUClassifier(nn.Module):
         x, _ = self.gru(x)
         # Unpack the sequence, and... hopefully this is safe... throw away video lengths
         x = nn.utils.rnn.pad_packed_sequence(x, batch_first=True)
-        x = self.classifier(x[0])
+        # We need to get the final prediction for each video
+        # Hopefully the padding doesn't fuck with the hidden states too bad
+        # that the shorter videos will just be feeding zeros into this
+        # I think the hidden state gets carried forward if the next input is all zeros
+        # But if this doesn't work, we will need to use the batch lengths to index the actual end frames
+        # And not just assume the last (padded) frame has it carried forward
+        x = self.classifier(x[0][:, -1, :])
  
         return x
 
@@ -300,6 +314,7 @@ class Cowen2017Dataset(VisionDataset):
                  annPath: str,
                  censor: bool = True,
                  train: bool = True,
+                 device: str = 'cpu',
                  transforms: Optional[Callable] = None,
                  transform: Optional[Callable] = None,
                  target_transform: Optional[Callable] = None) -> None:
@@ -310,10 +325,12 @@ class Cowen2017Dataset(VisionDataset):
         import pandas as pd
 
         self.train = train
+        self.device = device
 
         # Read in the Cowen & Keltner top-1 "winning" human emotion classes
         self.labels = pd.read_csv(os.path.join(annPath, f"{'train' if self.train else 'test'}_video_10fps_ids.csv"),
                                    index_col='video')
+        self.labels = self.labels[self.labels['emotion'].isin(emonet_output_classes)]
         
         if censor:
             # Truly I wish this was in long form but Alan doesn't like tidy data does he
@@ -353,6 +370,9 @@ class Cowen2017Dataset(VisionDataset):
 
         if self.transforms is not None:
             video, target = self.transforms(video, target)
+            
+        video.to(device=self.device)
+        target.to(device=self.device)
 
         return video, target
 
@@ -485,3 +505,26 @@ class CocoDetectionFromWeb(VisionDataset):
 
     def __len__(self) -> int:
         return len(self.ids)
+
+emonet_output_classes = [
+    'Adoration',
+    'Aesthetic Appreciation',
+    'Amusement',
+    'Anxiety',
+    'Awe',
+    'Boredom',
+    'Confusion',
+    'Craving',
+    'Disgust',
+    'Empathic Pain',
+    'Entrancement',
+    'Excitement',
+    'Fear',
+    'Horror',
+    'Interest',
+    'Joy',
+    'Romance',
+    'Sadness',
+    'Sexual Desire',
+    'Surprise'
+]
