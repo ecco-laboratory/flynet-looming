@@ -7,8 +7,7 @@ import platform
 import pandas as pd
 import torch
 import torchvision
-from emonet_utils import EmoNet
-from image_utils import Cowen2017Dataset
+from emonet_utils import Cowen2017Dataset, EmoNet, emonet_output_classes
 from tqdm import tqdm
 
 # %%
@@ -20,7 +19,8 @@ else:
     base_path = os.path.join(os.sep, base_path)
 
 emonet_path = '../ignore/models/EmoNet.pt'
-metadata_path = '/home/mthieu/Repos/CowenKeltner/metadata'
+local_ck_path = '/home/mthieu/Repos/CowenKeltner'
+metadata_path = os.path.join(local_ck_path, 'metadata')
 
 # %%
 # Fire up the ol net
@@ -31,31 +31,6 @@ emonet_torch.load_state_dict(state_dict=torch.load(emonet_path))
 # Right now we just be inferencing
 for param in emonet_torch.parameters():
     param.requires_grad = False
-
-# %%
-# Defining EmoNet's output classes--should do this in a utils though
-emonet_output_classes = [
-    'Adoration',
-    'Aesthetic Appreciation',
-    'Amusement',
-    'Anxiety',
-    'Awe',
-    'Boredom',
-    'Confusion',
-    'Craving',
-    'Disgust',
-    'Empathic Pain',
-    'Entrancement',
-    'Excitement',
-    'Fear',
-    'Horror',
-    'Interest',
-    'Joy',
-    'Romance',
-    'Sadness',
-    'Sexual Desire',
-    'Surprise'
-]
 
 # %%
 # Read in the Cowen & Keltner metadata
@@ -87,8 +62,9 @@ ck_viddata = ck_viddata.join(pd.concat([k19_train, k19_test]))
 
 test = torchvision.io.read_video(os.path.join(base_path, 'CowenKeltner/Videos_by_Category/Adoration/0035.mp4'), pts_unit='sec')
 
-ck_torchdata = Cowen2017Dataset(root=os.path.join(base_path, 'CowenKeltner/Videos_by_Category'),
+ck_torchdata = Cowen2017Dataset(root=os.path.join(local_ck_path, 'videos_10fps'),
                                 annPath=metadata_path,
+                                censor=False,
                                 train=False,
                                 transform=torchvision.transforms.Resize((227, 227))
                                 )
