@@ -217,6 +217,8 @@ class EmoNetPythonic(nn.Module):
 
 # %%
 # Loopy headless EmoNet (effectively Alexnet, minus the last conv aka MLP layer, looping over frames in a video)
+# Input tensors MUST be converted to float BEFORE passing into the model!!!
+# Otherwise converting them to float automatically puts them back on CPU, ugh
 class EmoNetHeadlessVideo(nn.Module):
     def __init__(self) -> None:
         # This creates the classes that will come in from the onnx2torch dict
@@ -268,7 +270,7 @@ class EmoNetHeadlessVideo(nn.Module):
         # because feeding in the data attribute of a PackedSequence
         # already lines up with the metadata needed to put the predictions back into sequences
         # using built-in PyTorch utilities
-        x = x.to(torch.float)
+        # x = x.to(device=self.device, dtype=torch.float)
         x = self.conv_0(x)
         x = self.conv_1(x)
         x = self.conv_2(x)
@@ -372,7 +374,9 @@ class Cowen2017Dataset(VisionDataset):
             video, target = self.transforms(video, target)
             
         video.to(device=self.device)
-        target.to(device=self.device)
+
+        if self.target_transform is not None:
+            target.to(device=self.device)
 
         return video, target
 
