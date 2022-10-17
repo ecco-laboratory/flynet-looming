@@ -3,6 +3,7 @@
 
 import os
 import platform
+from functools import partial
 
 import pandas as pd
 import torch
@@ -29,9 +30,13 @@ local_ck_path = '/home/mthieu/Repos/CowenKeltner'
 # Calculate weights for emo classes bc they are... unbalanced
 # I'm looking at you, amusement
 
+# Set this to emonet_output_classes if using all of them
+these_classes = ['Anxiety', 'Excitement', 'Fear', 'Horror', 'Surprise']
+
 k19_train = pd.read_csv(os.path.join(local_ck_path, 'metadata', 'train_video_ids.csv'), index_col='video')
 # Keep only the ones from the 20 classes that Phil kept
 k19_train = k19_train[k19_train['emotion'].isin(emonet_output_classes)]
+
 # Get the relative frequencies in alphabetical order
 emonet_class_weights = k19_train['emotion'].value_counts(normalize=True).sort_index()
 # Rounding to 4 digits made them add up to 1. Deal with it
@@ -44,6 +49,19 @@ emonet_class_weights = emonet_class_weights.to(device)
 # To choose fewer goddamn amusement videos! My goodness
 emonet_class_weights_reverse = k19_train['emotion'].value_counts().sort_index()
 emonet_class_weights_reverse = [round(emonet_class_weights_reverse.sum()/weight, 4) for weight in emonet_class_weights_reverse]
+
+# Separate set of weights when only including these four emotion classes
+# Again, one set for weighting the classes in the loss function
+# And one somewhat reciprocal-ed set for oversampling
+# Remember, the classes are _alphabetized!_
+emonet_4class_weights = k19_train['emotion'][k19_train['emotion'].isin(these_classes)].value_counts(normalize=True).sort_index()
+emonet_4class_weights = [round(weight, 4) for weight in emonet_4class_weights.to_list()]
+emonet_4class_weights = torch.Tensor(emonet_4class_weights)
+# Literally every tensor needs to be moved to GPU dear god
+emonet_4class_weights = emonet_4class_weights.to(device)
+
+emonet_4class_weights_reverse = k19_train['emotion'][k19_train['emotion'].isin(these_classes)].value_counts().sort_index()
+emonet_4class_weights_reverse = [round(emonet_4class_weights_reverse.sum()/weight, 4) for weight in emonet_4class_weights_reverse]
 # %%
 # Fire up a newer net
 emonet_headless = EmoNetHeadlessVideo()
@@ -56,7 +74,7 @@ for param in emonet_headless.parameters():
 emonet_headless.to(device)
 # %%
 # Fire up a recurrent net!
-decoder_gru = GRUClassifier()
+decoder_gru = GRUClassifier(num_classes=5, bidirectional=True)
 decoder_gru.to(device)
 # %%
 # Load ze data
@@ -74,14 +92,13 @@ these_transforms = transforms.Compose([
     transforms.RandomHorizontalFlip(),
     transforms.Resize((227, 227))
 ])
-these_target_transforms = get_target_emotion_index
-
-
+these_target_transforms = partial(get_target_emotion_index, classes=these_classes)
 
 ck_train = Cowen2017Dataset(
     root=video_path,
     annPath=metadata_path,
     censor=False,
+    classes=these_classes,
     train=True,
     device=device,
     transform=these_transforms,
@@ -93,6 +110,7 @@ ck_test = Cowen2017Dataset(
     root=video_path,
     annPath=metadata_path,
     censor=False,
+    classes=these_classes,
     train=False,
     device=device,
     transform=these_transforms,
@@ -103,6 +121,7 @@ ck_test_unaugmented = Cowen2017Dataset(
     root=video_path,
     annPath=metadata_path,
     censor=False,
+    classes=these_classes,
     train=False,
     device='cpu',
     transform=transforms.Resize((227, 227))
@@ -112,14 +131,16 @@ ck_test_unaugmented = Cowen2017Dataset(
 # Phil used minibatches of 16 for the EmoNet paper
 # But... we have so few goddamn videos
 
-batch_size = 8
+oversampler = torch.utils.data.WeightedRandomSampler(
+    weights=emonet_4class_weights_reverse,
+    num_samples=len(ck_train)
+)
+
+batch_size = 4
 ck_train_torchloader = torch.utils.data.DataLoader(
     ck_train,
     batch_size=batch_size,
-    sampler=torch.utils.data.WeightedRandomSampler(
-        weights=emonet_class_weights_reverse,
-        num_samples=len(ck_train)
-    ),
+    shuffle=True,
     collate_fn=pad_sequence_tuple
 )
 ck_test_torchloader = torch.utils.data.DataLoader(
@@ -132,7 +153,8 @@ ck_test_torchloader = torch.utils.data.DataLoader(
 # %%
 # Define training and testing epoch functions
 
-loss_fn = torch.nn.NLLLoss(weight=emonet_class_weights)
+loss_fn_unweighted = torch.nn.NLLLoss()
+loss_fn_weighted = torch.nn.NLLLoss(weight=emonet_4class_weights)
 # Phil's initial EmoNet learning rate was 1e-4 but I feel like that shit ain't enough
 learning_rate = 1e-3
 # Spoopy! We're gonna use stochastic gradient descent bc Phil used it for EmoNet
@@ -223,7 +245,7 @@ emonet_headless.eval()
 
 # We're gonna need a lot of epochs bc there are. Not a lot of videos
 # My friends, we shall see what happens
-n_epochs = 10
+n_epochs = 15
 
 for epoch in range(n_epochs):
     print(f"Epoch {epoch+1}\n-------------------------------")
@@ -231,20 +253,21 @@ for epoch in range(n_epochs):
         ck_train_torchloader,
         emonet_headless,
         decoder_gru,
-        loss_fn,
+        loss_fn_weighted,
         optimizer
     )
     test_decoder(
         ck_test_torchloader,
         emonet_headless,
         decoder_gru,
-        loss_fn
+        loss_fn_weighted
     )
 print('By god, you\'ve done it.')
+torch.save(decoder_gru.state_dict(), '../ignore/models/GRUClassifier20221014_03.pt')
 # %%
 # Just getting the predictions on the test data
-decoder_gru = GRUClassifier()
-decoder_gru.load_state_dict(state_dict=torch.load(os.path.join(model_path, 'GRUClassifier20221007_02.pt')))
+decoder_gru = GRUClassifier(num_classes=5, bidirectional=True)
+decoder_gru.load_state_dict(state_dict=torch.load(os.path.join(model_path, 'GRUClassifier20221014_03.pt'), map_location=torch.device(device)))
 decoder_gru.to(device)
 decoder_gru.eval()
 preds_all = {}
@@ -269,12 +292,12 @@ for vid, target in tqdm(ck_test_unaugmented):
     preds_all[target['id']] = preds.numpy()
 
 for id in preds_all.keys():
-    preds_all[id] = pd.DataFrame(preds_all[id], columns=emonet_output_classes)
+    preds_all[id] = pd.DataFrame(preds_all[id], columns=these_classes)
 
 preds_all = pd.concat(preds_all, names=['video', 'frame'])
 
 preds_all['guess_1'] = preds_all.idxmax(axis=1)
 
-preds_all.to_csv(os.path.join(metadata_path, 'test_gru_oversampled_preds.csv'))
+preds_all.to_csv(os.path.join(metadata_path, 'test_gru_5class_bidirectional_preds.csv'))
 
 # %%
