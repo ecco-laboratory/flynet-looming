@@ -1,25 +1,33 @@
 # %%
 # imports
+import os
 import platform
 
 import numpy as np
 import pandas as pd
 import torch
-import torchvision
-from emonet_utils import EmoNet
-from image_utils import NSDDataset
+from emonet_utils import Cowen2017FrameDataset, EmoNet
+from nsd_utils import NSDDataset
 from torch import nn
 from torchvision import transforms
 from tqdm import tqdm, trange
 
 # %%
 # Set abs paths based on which cluster node we're on
-base_path = '/data/eccolab/'
+base_path = 'data/eccolab'
 if platform.node() != 'ecco':
-    base_path = '/home'+base_path
+    base_path = os.path.join(os.sep, 'home', base_path)
+else:
+    base_path = os.path.join(os.sep, base_path)
+
 
 emonet_path = '../ignore/models/EmoNet.pt'
-nsd_path = base_path+'Code/NSD/'
+
+local_ck_path = '/home/mthieu/Repos/CowenKeltner'
+nsd_path = os.path.join(base_path, 'Code', 'NSD')
+
+video_path = os.path.join(local_ck_path, 'videos_10fps')
+metadata_path = os.path.join(local_ck_path, 'metadata')
 
 # %%
 # Define hook functions to get intermediate activations
@@ -51,7 +59,7 @@ for name, mod in emonet_torch.named_modules():
         mod.register_forward_hook(cache_layer_activation(name))
 
 # %%
-# Preload ze NSD image data
+# Initialize Dataset objs for ze NSD image data
 # Use the NSD images, not the original COCO images/API, even though they're in torchvision
 # because the NSD images come pre-cropped and with their own metadata
 # It doesn't take that long because HDF5 lazy-load! Yay, I think
@@ -68,12 +76,41 @@ nsd_torchdata = NSDDataset(root=nsd_path+'stimuli/',
                            shared1000=True,
                            transform=nsd_transform)
 
-# %%
-# Initialize ze DataLoader to actually feed into the model
-
-#
 batch_size = 10
 nsd_torchloader = torch.utils.data.DataLoader(nsd_torchdata, batch_size=batch_size)
+# %%
+# Initialize Dataset objs for Cowen & Keltner FRAMES
+these_classes = ['Anxiety', 'Excitement', 'Fear', 'Horror', 'Surprise']
+
+ck_train = Cowen2017FrameDataset(
+    root=video_path,
+    annPath=metadata_path,
+    censor=False,
+    classes=these_classes,
+    train=True,
+    device='cpu',
+    transform=transforms.Resize((227, 227))
+)
+
+ck_test = Cowen2017FrameDataset(
+    root=video_path,
+    annPath=metadata_path,
+    censor=False,
+    classes=these_classes,
+    train=False,
+    device='cpu',
+    transform=transforms.Resize((227, 227))
+)
+
+batch_size = 16
+ck_train_torchloader = torch.utils.data.DataLoader(
+    ck_train,
+    batch_size=batch_size
+)
+ck_test_torchloader = torch.utils.data.DataLoader(
+    ck_test,
+    batch_size=batch_size
+)
 # %%
 # DO IT?! RUN IT! GET PREDS
 emonet_torch.eval()
@@ -94,11 +131,15 @@ activations_all = {
     }
 activations = {}
 preds_all = []
+labs_all = []
 pred = []
 
-for img, lab in tqdm(nsd_torchloader):
+# Put the relevant Dataset or DataLoader object right into the tqdm
+
+for img, lab in tqdm(ck_train_torchloader):
     pred = emonet_torch(img)
     preds_all.append(pred.numpy())
+    labs_all.append(lab)
     for layer in activations_all.keys():
         activations_all[layer].append(activations[layer])
 
@@ -112,10 +153,24 @@ preds_all = np.concatenate(preds_all, axis=0)
 
 for layer in activations_all.keys():
     # reshape each batch to 2d
-    activations_all[layer] = [act.reshape(batch_size, -1) for act in activations_all[layer]]
+    activations_all[layer] = [act.reshape((act.shape[0], -1)) for act in activations_all[layer]]
     # once each is internally 2d, unnest longer by concatenating
     activations_all[layer] = np.concatenate(activations_all[layer], axis=0)
 
+labs_all_concat = dict.fromkeys(labs_all[0].keys())
+for key in labs_all_concat.keys():
+    for lab in labs_all:
+        if labs_all_concat[key] is None:
+            labs_all_concat[key] = []
+        else:
+            labs_all_concat[key].append(lab[key])
+
+    if torch.is_tensor(labs_all_concat[key][0]):
+        labs_all_concat[key] = torch.cat(labs_all_concat[key])
+    else:
+        labs_all_concat[key] = [lablet for lab in labs_all_concat[key] for lablet in lab]
+
+labs_all_concat = pd.DataFrame(labs_all_concat)
 # %%
 # Generate correlation matrices
 

@@ -104,7 +104,6 @@ class CocoDetectionFromWeb(VisionDataset):
     def __init__(
         self,
         cocoAnnFile: str,
-        nsdAnnFile: str,
         transform: Optional[Callable] = None,
         target_transform: Optional[Callable] = None,
         transforms: Optional[Callable] = None,
