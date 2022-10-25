@@ -8,7 +8,7 @@ import cv2 as cv
 import numpy as np
 import pandas as pd
 from numpy.core.fromnumeric import reshape
-from PIL import ImageOps
+from PIL import Image, ImageOps
 from tqdm import tqdm, trange
 from tslearn.metrics import dtw
 
@@ -94,7 +94,24 @@ def read_and_calc_video_flow(path):
     flow_frames = np.stack(flow_frames, axis=0)
     return flow_frames
 
-# %%
+def convert_flow_to_rgb(frames):
+    frames_converted = []
+    for frame in frames:
+        frame_converted = np.zeros((frame.shape[0], frame.shape[1], 3), dtype=np.uint8)
+        magnitude, angle = cv.cartToPolar(frame[..., 0], frame[..., 1])
+        # HUE from the angle, with red at 0 degrees
+        frame_converted[..., 0] = angle * 180 / np.pi / 2
+        # SATURATION set to max for party vibes
+        frame_converted[..., 1] = 255
+        # VALUE from the magnitude so lighter = more flow
+        frame_converted[..., 2] = cv.normalize(magnitude, None, 0, 255, cv.NORM_MINMAX)
+        frame_converted = Image.fromarray(frame_converted, mode='HSV')
+        frame_converted = np.array(frame_converted.convert(mode='RGB'))
+        frames_converted.append(frame_converted)
+
+    frames_converted = np.stack(frames_converted, axis=0)
+    return frames_converted
+    # %%
 # Get video metadata for just these classes
 
 # Need these because they have the top-1 human class labels attached to the video IDs
