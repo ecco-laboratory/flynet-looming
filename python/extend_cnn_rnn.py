@@ -5,6 +5,7 @@ import os
 import platform
 from functools import partial
 
+import numpy as np
 import pandas as pd
 import torch
 from emonet_utils import (Cowen2017Dataset, EmoNetHeadlessVideo, GRUClassifier,
@@ -272,6 +273,37 @@ decoder_gru.to(device)
 decoder_gru.eval()
 preds_all = {}
 
+# Prepare to also get layer activations
+activations = {}
+def cache_recurrent_layer_activation(name):
+    def hook(model, input, output):
+        # Basically need to apply some of the computations normally done inside the forward pass
+        # To unpad the padded sequence of activations
+        # And correctly get last-frame activations from shorter videos in the padded batch
+        # Unpack the sequence, and... hopefully this is safe... throw away video lengths
+        acts_padded, lens = torch.nn.utils.rnn.pad_packed_sequence(output[0], batch_first=True)
+        # Use the batch lengths to index the actual end frames for each video
+        # I'm not sure that the last (padded) frame has it carried forward
+        acts_unpadded = torch.stack([acts_padded[idx, lens[idx]-1, :] for idx in range(lens.size(dim=0))])
+
+        activations[name] = acts_unpadded.detach().numpy()
+    return hook
+
+def cache_forward_layer_activation(name):
+    def hook(model, input, output):
+        activations[name] = output.detach().numpy()
+    return hook
+
+
+decoder_gru.gru.register_forward_hook(cache_recurrent_layer_activation('gru'))
+decoder_gru.classifier.register_forward_hook(cache_forward_layer_activation('classifier'))
+
+activations_all = {
+    'gru': {},
+    'classifier': {}
+    }
+
+# Actually run the forward passes
 for vid, target in tqdm(ck_test_unaugmented):
     vids_packed = pack_padded_sequence_float(vid.unsqueeze(0), [1], device)
 
@@ -288,14 +320,37 @@ for vid, target in tqdm(ck_test_unaugmented):
     with torch.no_grad():
         preds = decoder_gru(encoded_packed)
     
+    # Final model predictions
     preds = preds.to('cpu')
     preds_all[target['id']] = preds.numpy()
+
+    # Intermediate model activations
+    for layer in activations_all.keys():
+        activations_all[layer][target['id']] = activations[layer]
+    # Clear out activations before next img
+    activations = {}
+
+# %%
+# Record the predictions from the forward passes out to file
+# Record the intermediate layer activations from the forward passes
+for layer in activations_all.keys():
+    for id in activations_all[layer].keys():
+        activations_all[layer][id] = pd.DataFrame(activations_all[layer][id])
+    
+    activations_all[layer] = pd.concat(activations_all[layer], names = ['video', 'frame'])
+    # Remove frame as an index column bc it's all 0 since it's only 1 per video
+    activations_all[layer] = activations_all[layer].reset_index(level='frame').drop('frame', axis='columns')
+
 
 for id in preds_all.keys():
     preds_all[id] = pd.DataFrame(preds_all[id], columns=these_classes)
 
 preds_all = pd.concat(preds_all, names=['video', 'frame'])
+preds_all = preds_all.reset_index(level='frame').drop('frame', axis='columns')
 
+
+# %%
+# Write stuff to CSV (separate chunk in case you don't want to)
 preds_all['guess_1'] = preds_all.idxmax(axis=1)
 
 preds_all.to_csv(os.path.join(metadata_path, 'test_gru_5class_bidirectional_preds.csv'))
