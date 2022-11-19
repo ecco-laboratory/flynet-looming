@@ -33,12 +33,17 @@ these_classes = ['Anxiety', 'Excitement', 'Fear', 'Horror', 'Surprise']
 
 # io handling
 # path = os.path.join(local_ck_path, 'videos_10fps', 'Excitement', '1838.mp4')
-def read_and_resize_video_frames(path):
+
+# resize needs to be a tuple of width, height
+def read_and_resize_video_frames(path, resize = None):
     frames = []
     with av.open(path) as video_container:
         for frame in video_container.decode(video=0):
             # go to PIL Image first to use the resize method
-            frame_resized = frame.to_image().resize((227, 227))
+            if resize is not None:
+                frame_resized = frame.to_image().resize(resize)
+            else:
+                frame_resized = frame.to_image()
             frames.append(np.array(frame_resized))
 
     frames = np.stack(frames, axis=0)
@@ -51,9 +56,83 @@ def reshape_video_array(array):
     return array.reshape((array.shape[0], -1))
 
 # %%
-# Define functions to get optical flow?!
+# Define functions to work with optical flow?!
 
-def read_and_calc_video_flow(path):
+def get_pixel_radius_vector(x, y, width, height):
+    # WORKS BEST WHEN THERE IS AN ACTUAL PIXEL AT THE CENTER!
+    # returns the unit-circle xy vector for a pixel's location on its unit circle
+    # centered on the center pixel
+
+    # - 1 because python does its 0 indexing bullshit
+    x_center = np.ceil(width / 2 - 1)
+    y_center = np.ceil(height / 2 - 1)
+
+    run = x - x_center
+    # This one is flipped so that 0 is at the top
+    rise = y_center - y
+
+    if run == 0 and rise == 0:
+        # Special case at the center
+        # to avoid dividing by hypotenuse of 0
+        # Will feed forward as always showing 0 radial flow at the center
+        return np.array([[0, 0]])
+    else:
+        # Can you believe I am using the Pythagorean theorem?
+        hypotenuse = np.sqrt(run**2 + rise**2)
+        # Dividing the hypotenuse (radius) by itself would unit-ify the radius
+        # So scaling down both of the other legs by the hypotenuse
+        # should return the correct x-y components of the unit circle vector
+        # Returns a 1x2 array
+        return np.array([[run/hypotenuse, rise/hypotenuse]])
+
+def get_pixel_radial_flow(flow_vector, rad_vector):
+    # Now takes the dot product!
+    # thanks Phil for reminding me that linear algebra exists
+    # As long as the radius vector has already been normalized to unit magnitude
+    # This should work
+
+    # Assuming both come in as 1x2 arrays,
+    # Transpose the second one to 2x1
+    # so you can use @ for matrix multiplication
+    # as recommended by numpy
+
+    # Returns JUST the magnitude
+    # bc dot product returns a scalar
+    return float(flow_vector @ rad_vector.T)
+
+def calc_radial_flow(frames):
+    # Returns ONLY frames of magnitudes
+    # Because the whole point of radial flow is that the angle is presumed to be... radial
+    n_frames = frames.shape[0]
+    frame_width = frames.shape[1]
+    frame_height = frames.shape[2]
+    # Can't use zeros_like because we only need length 1 on the 4th dimension
+    # bc pixelwise radial flow comes out as a magnitude
+    radial_flow_frames = np.zeros((n_frames, frame_width, frame_height))
+    # Can't FULLY vectorize this because we need to operate on the pairs in the 4th dimension together
+    
+    for x in range(frames.shape[1]):
+        for y in range(frames.shape[2]):
+            # Don't need to use cartToPolar
+            # bc dot products work on cartesian vectors!
+            # Calculate this BEFORE iterating over the time dimension
+            # because this will be the same for a given pixel location at every timepoint
+            pixel_rad_vector = get_pixel_radius_vector(
+                x=x,
+                y=y,
+                width=frame_width,
+                height=frame_height
+            )
+            for time in range(frames.shape[0]):
+                radial_flow_frames[time, x, y] = get_pixel_radial_flow(
+                    flow_vector=frames[time, x, y, :],
+                    rad_vector=pixel_rad_vector
+                )
+    
+    return radial_flow_frames
+    
+
+def read_and_calc_video_flow(path, resize = False):
 
     flow_frames = []
 
@@ -68,8 +147,10 @@ def read_and_calc_video_flow(path):
 
     with av.open(path) as video_container:
         for frame in video_container.decode(video=0):
-            # go to PIL Image first to use the resize method
-            frame_resized = frame.to_image().resize((227, 227))
+            frame_resized = frame.to_image()
+            if resize:
+                # go to PIL Image first to use the resize method
+                frame_resized = frame_resized.resize((227, 227))
             frame_gray = ImageOps.grayscale(frame_resized)
             # Just to be sure, I think cv2 needs it as a numpy array
             frame_gray = np.array(frame_gray)
@@ -85,7 +166,7 @@ def read_and_calc_video_flow(path):
                 flow = cv.calcOpticalFlowFarneback(
                     prev_frame_gray, frame_gray,
                     None,
-                    0.5, 3, 15, 3, 5, 1.2, 0
+                    0.5, 3, 13, 3, 5, 1.1, 0
                 )
 
                 flow_frames.append(flow)
@@ -94,7 +175,7 @@ def read_and_calc_video_flow(path):
     flow_frames = np.stack(flow_frames, axis=0)
     return flow_frames
 
-def convert_flow_to_rgb(frames):
+def convert_flow_to_rgb_polar(frames):
     frames_converted = []
     for frame in frames:
         frame_converted = np.zeros((frame.shape[0], frame.shape[1], 3), dtype=np.uint8)
@@ -111,7 +192,40 @@ def convert_flow_to_rgb(frames):
 
     frames_converted = np.stack(frames_converted, axis=0)
     return frames_converted
-    # %%
+
+def convert_flow_to_rgb_cart(frames):
+    frames_converted = []
+    for frame in frames:
+        frame_converted = np.zeros((frame.shape[0], frame.shape[1], 3), dtype=np.uint8)
+        # Dumb Bitch Normalization:
+        # multiply/divide by a constant and then add/subtract another constant
+        # so that original "flow unit" information is still maintained
+        # I am going to hope to jesus that no abs(flow) is ever bigger than 512
+        # Because that is basically hard coded in here
+        # code x to red
+        frame_converted[..., 0] = (frame[..., 0] / 4) + 128
+        # nothing to green cuz green sux
+        frame_converted[..., 1] = 0
+        # code y to blue
+        frame_converted[..., 2] = (frame[..., 1] / 4) + 128
+
+        frames_converted.append(frame_converted)
+
+    frames_converted = np.stack(frames_converted, axis=0)
+    return frames_converted
+
+def write_arrays_to_imgs(frames, filename_stem):
+    # Assumes frames are stored as ndarrays
+    # So converts to pillow Image first
+    for frame_id in range(len(frames)):
+        img = Image.fromarray(frames[frame_id])
+        # There should never be more than 110 frames in our CK 10fps set
+        # so padding to 3 digits should be sufficient for that
+        # But for other videos... who knows. So, to be safe
+        # For UCF101, adding that f prefix before the flow-frame number
+        # to be consistent with its apparent existing naming convention
+        img.save(os.path.join(filename_stem+f'_f{frame_id:04}'+'.jpeg'))
+# %%
 # Get video metadata for just these classes
 
 # Need these because they have the top-1 human class labels attached to the video IDs
