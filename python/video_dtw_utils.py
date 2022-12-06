@@ -132,7 +132,7 @@ def calc_radial_flow(frames):
     return radial_flow_frames
     
 
-def read_and_calc_video_flow(path, resize = False):
+def read_and_calc_video_flow(path, resize = None):
 
     flow_frames = []
 
@@ -148,9 +148,9 @@ def read_and_calc_video_flow(path, resize = False):
     with av.open(path) as video_container:
         for frame in video_container.decode(video=0):
             frame_resized = frame.to_image()
-            if resize:
+            if resize is not None:
                 # go to PIL Image first to use the resize method
-                frame_resized = frame_resized.resize((227, 227))
+                frame_resized = frame_resized.resize(resize)
             frame_gray = ImageOps.grayscale(frame_resized)
             # Just to be sure, I think cv2 needs it as a numpy array
             frame_gray = np.array(frame_gray)
