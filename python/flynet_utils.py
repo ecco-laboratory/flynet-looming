@@ -55,7 +55,7 @@ class MegaFlyNet(nn.Module):
         x = torch.sum(x, axis=[-2, -1])
         x = self.classifier(x)
         x = torch.sigmoid(x)
-        # THEN!! average P(hit) across timepoints
+        # THEN!! average readout or P(hit) across timepoints
         # The paper has stuff to do a weighted average to favor some timepoints
         # but I don't have the weights so, shrug
         # axis -2 because the last dim is still 1?
@@ -90,6 +90,20 @@ class FlyNet(nn.Module):
         x = torch.sum(x, axis=-2)
         # and then we out!
         return x
+
+# %%
+# Helper functions for running real videos through FlyNet
+
+def convert_flow_numpy_to_tensor(frames):
+    frames = torch.Tensor(frames)
+    # Go ahead and put channels in axis 1 bc Conv2d needs it there
+    out = torch.zeros((frames.shape[0], 4, frames.shape[1], frames.shape[2]))
+    out[:, 0, :, :] = nn.functional.relu(frames[..., 0])
+    out[:, 1, :, :] = nn.functional.relu(-frames[..., 0])
+    out[:, 2, :, :] = nn.functional.relu(frames[..., 1])
+    out[:, 3, :, :] = nn.functional.relu(-frames[..., 1])
+
+    return out
 
 # %%
 # Helper functions from Baohua's little vis notebook

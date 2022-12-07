@@ -56,19 +56,6 @@ for param in megaflynet.parameters():
     param.requires_grad = False
 
 # %%
-# Helper functions for running real videos through FlyNet
-
-def convert_flow_numpy_to_tensor(frames):
-    frames = torch.Tensor(frames)
-    # Go ahead and put channels in axis 1 bc Conv2d needs it there
-    out = torch.zeros((frames.shape[0], 4, frames.shape[1], frames.shape[2]))
-    out[:, 0, :, :] = nn.functional.relu(frames[..., 0])
-    out[:, 1, :, :] = nn.functional.relu(-frames[..., 0])
-    out[:, 2, :, :] = nn.functional.relu(frames[..., 1])
-    out[:, 3, :, :] = nn.functional.relu(-frames[..., 1])
-
-    return out
-# %%
 # Reading flow directly in from videos cause... I don't give a fuck rn
 
 video_ids = []
