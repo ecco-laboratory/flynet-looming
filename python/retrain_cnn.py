@@ -10,8 +10,6 @@ import torch
 from emonet_utils import (Cowen2017FrameDataset, EmoNetHeadlessVideo,
                           LinearClassifier, emonet_output_classes,
                           get_target_emotion_index)
-from image_utils import pad_sequence_tuple
-from torch.nn.utils import rnn as rnn_utils
 from torchvision import transforms
 from tqdm import tqdm
 
