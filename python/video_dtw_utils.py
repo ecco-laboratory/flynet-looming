@@ -132,7 +132,7 @@ def calc_radial_flow(frames):
     return radial_flow_frames
     
 
-def read_and_calc_video_flow(path, resize = None):
+def read_and_calc_video_flow(path, resize = None, progress = False):
 
     flow_frames = []
 
@@ -146,7 +146,12 @@ def read_and_calc_video_flow(path, resize = None):
     prev_frame_gray = None
 
     with av.open(path) as video_container:
-        for frame in video_container.decode(video=0):
+        if progress:
+            iterator = tqdm(video_container.decode(video=0))
+        else:
+            iterator = video_container.decode(video=0)
+
+        for frame in iterator:
             frame_resized = frame.to_image()
             if resize is not None:
                 # go to PIL Image first to use the resize method
