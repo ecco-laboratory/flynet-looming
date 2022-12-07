@@ -1,0 +1,62 @@
+---
+title: "Inspecting Cowen & Keltner 2017 video metadata again"
+format: html
+---
+
+```{r}
+#| include: false
+
+require(tidyverse)
+require(magrittr)
+
+emonet_classes <- c('Adoration',
+    'Aesthetic Appreciation',
+    'Amusement',
+    'Anxiety',
+    'Awe',
+    'Boredom',
+    'Confusion',
+    'Craving',
+    'Disgust',
+    'Empathic Pain',
+    'Entrancement',
+    'Excitement',
+    'Fear',
+    'Horror',
+    'Interest',
+    'Joy',
+    'Romance',
+    'Sadness',
+    'Sexual Desire',
+    'Surprise')
+
+video_classes_train <- read_csv(here::here("ignore", "outputs", "kragel2019_train_video_ids.csv"))
+video_classes_test <- read_csv(here::here("ignore", "outputs", "kragel2019_test_video_ids.csv"))
+video_classes <- bind_rows(video_classes_train, video_classes_test)
+
+video_metadata <- read_csv(here::here("ignore", "outputs", "ck2019_video_metadata.csv")) %>% 
+  left_join(video_classes, by = "video")
+```
+
+```{r}
+video_metadata %>% 
+  ggplot(aes(x = duration)) +
+  geom_histogram(binwidth = .5)
+```
+
+```{r}
+video_metadata %>% 
+  filter(duration <= 11) %>% 
+  left_join(video_metadata %>% 
+              filter(duration <= 11) %>% 
+              count(emotion),
+            by = "emotion") %>% 
+  ggplot(aes(x = fct_reorder(emotion, duration), y = duration, fill = n)) +
+  geom_boxplot() +
+  scale_fill_viridis_c(trans = "log") +
+  guides(x = guide_axis(angle = 45)) +
+  labs(x = "Winning human emotion label",
+       y = "Video duration (seconds)",
+       fill = "# videos in class")
+```
+

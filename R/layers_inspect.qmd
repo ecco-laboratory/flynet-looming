@@ -1,0 +1,112 @@
+---
+title: "EmoNet layer activations"
+format: html
+editor: visual
+---
+
+```{r setup}
+#| include: false
+
+require(tidyverse)
+require(gganimate)
+
+emonet_classes <- c('Adoration',
+    'Aesthetic Appreciation',
+    'Amusement',
+    'Anxiety',
+    'Awe',
+    'Boredom',
+    'Confusion',
+    'Craving',
+    'Disgust',
+    'Empathic Pain',
+    'Entrancement',
+    'Excitement',
+    'Fear',
+    'Horror',
+    'Interest',
+    'Joy',
+    'Romance',
+    'Sadness',
+    'Sexual Desire',
+    'Surprise')
+```
+
+```{r}
+emonet_preds <- read_csv(here::here("ignore", "outputs", "emonet_torch_probs_nsd_shared1000.txt"), col_names = emonet_classes) %>% 
+  mutate(img = 1:n()) %>% 
+  pivot_longer(cols = -img, names_to = "emo_class", values_to = "prob") %>% 
+  group_by(img) %>% 
+  filter(prob == max(prob))
+```
+
+
+```{r}
+emonet_distmats <- tibble(filename = list.files(here::here("ignore", "outputs"),
+                                               pattern = "distmat",
+                                               full.names = TRUE),
+       layer = list.files(here::here("ignore", "outputs"), pattern = "distmat")) %>% 
+  separate(layer, into = c(rep(NA, 5), "layer", NA), convert = TRUE) %>% 
+  mutate(data = map(filename, read_csv, col_names = F)) %>% 
+  select(-filename)
+
+
+emonet_tsne_start <- emonet_distmats %>% 
+  pull(data) %>% 
+  pluck(8) %>% 
+  as.dist() %>% 
+  tsne::tsne(perplexity = 50,
+             max_iter = 1000,
+             min_cost = 1.9)
+
+emonet_tsnes <- emonet_distmats %>% 
+  mutate(data = map(data, ~.x %>% 
+                      as.dist() %>% 
+                      tsne::tsne(initial_config = emonet_tsne_start,
+                                 perplexity = 50,
+                                 max_iter = 1000,
+                                 min_cost = 1.8)))
+
+write_rds(emonet_tsnes, here::here("ignore", "outputs", "emonet_torch_tsnes.rds"))
+```
+
+```{r}
+emonet_tsnes_preplot <- emonet_tsnes %>% 
+  mutate(data = map(data, as_tibble, .name_repair = "universal")) %>% 
+  unnest(data) %>% 
+  rename(x = ...1, y = ...2) %>% 
+  group_by(layer) %>% 
+  mutate(img = 1:n(),
+         x = c(scale(x)),
+         y = c(scale(y))) %>% 
+  ungroup() %>% 
+  left_join(emonet_preds, by = "img")
+
+emonet_tsne_animated <- emonet_tsnes_preplot %>% 
+  ggplot(aes(x = x, y = y, color = emo_class)) + 
+  geom_point()
+```
+```{r}
+emonet_tsne_animated + transition_states(layer, transition_length = 2, state_length = 1) + ggtitle('Un-adjusted tSNE of EmoNet layer activation similarity for NSD images', subtitle = "Layer {closest_state}")
+```
+
+
+```{r}
+emonet_cormats <- tibble(filename = list.files(here::here("ignore", "outputs"),
+                                               pattern = "cormat",
+                                               full.names = TRUE),
+       layer = list.files(here::here("ignore", "outputs"), pattern = "cormat")) %>% 
+  separate(layer, into = c(rep(NA, 5), "layer", NA), convert = TRUE) %>% 
+  mutate(data = map(filename, read_csv, col_names = F)) %>% 
+  select(-filename)
+
+emonet_cors <- emonet_cormats %>% 
+  unnest(data) %>% 
+  group_by(layer) %>% 
+  mutate(row = paste0("X", 1:n())) %>% 
+  ungroup() %>% 
+  relocate(row, .before = 1) %>% 
+  pivot_longer(cols = -c(layer, row), names_to = "col", values_to = "correlation") %>% 
+  mutate(across(c(row, col), ~as.integer(str_sub(., start = 2L))))
+```
+
