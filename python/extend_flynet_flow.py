@@ -7,8 +7,8 @@ from matplotlib import pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
-from video_dtw_utils import read_and_calc_video_flow
-from flynet_utils import MegaFlyNet, convert_flow_numpy_to_tensor
+from myutils.video_dtw_utils import read_and_calc_video_flow
+from myutils.flynet_utils import MegaFlyNet, convert_flow_numpy_to_tensor
 from tqdm import trange
 
 # %%
@@ -29,6 +29,10 @@ flow_ring_expand = read_and_calc_video_flow(os.path.join(studyforrest_retinotopy
 flow_ring_contract = read_and_calc_video_flow(os.path.join(studyforrest_retinotopy_stimuli_path, 'ring_contract.mp4'), resize=(132,132), progress=True)
 flow_wedge_clock = read_and_calc_video_flow(os.path.join(studyforrest_retinotopy_stimuli_path, 'wedge_clock.mp4'), resize=(132,132), progress=True)
 flow_wedge_counter = read_and_calc_video_flow(os.path.join(studyforrest_retinotopy_stimuli_path, 'wedge_counter.mp4'), resize=(132,132), progress=True)
+# %%
+# Estimate dense optical flow for Clery et al 2020 marmoset fMRI looming stimuli
+clery_2020_path = '/home/mthieu/stimuli/clery_2020_marmoset_stimulus.mp4'
+flow_clery_2020 = read_and_calc_video_flow(clery_2020_path, resize=(132,132), progress=True)
 # %%
 # Load FlyNet
 megaflynet = MegaFlyNet(conv_stride=8)
