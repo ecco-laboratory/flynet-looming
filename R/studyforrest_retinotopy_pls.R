@@ -6,11 +6,20 @@ require(plsmod)
 # load tidyverse after all that stuff because there are functions in the above packages that mask select() and map()
 require(tidyverse)
 require(magrittr)
-
-future::plan("multisession", workers = 12)
+require(crayon)
 
 skip_v1 <- TRUE
+n_perms <- 500
 skip_perms <- FALSE
+in_parallel <- TRUE
+
+if (in_parallel) {
+  # Not trying to blow up node1
+  n_cores <- 16
+  options(mc.cores = n_cores)
+  future::plan("multicore", workers = n_cores)
+  cat("Will run permutations in parallel with " %+% green(n_cores) %+% " cores", fill = TRUE)
+}
 
 # using the parameters to reproduce the SPM default HRF
 # SPM uses a 32-s kernel, mind thee
@@ -78,7 +87,7 @@ activation_ints_convolved <- tibble(stim_type = c("ring_expand", "ring_contract"
 write_rds(activation_ints_convolved, here::here("ignore", "outputs", "studyforrest_retinotopy_flynet_timecourses.rds"))
 
 ## get fmri data ----
-cat(crayon::magenta("Reading in brain data"), fill = TRUE)
+cat(magenta("Reading in brain data"), fill = TRUE)
 
 # subject by voxel by timepoint by condition
 # note: Matlab by default, and thus Phil’s CANLabTools,
@@ -164,7 +173,7 @@ if (!skip_v1) {
 }
 
 ## bind predictors and outcomes together ----
-cat(crayon::magenta("Making split data for modeling"), fill = TRUE)
+cat(magenta("Making split data for modeling"), fill = TRUE)
 
 split_data_sc <- sc_data %>% 
   left_join(activation_ints_convolved,
@@ -431,44 +440,65 @@ if (!skip_v1) {
   
   write_rds(metrics_v1, here::here("ignore", "outputs", "studyforrest_retinotopy_v1_pls_metrics.rds"))
 } else {
-  cat(crayon::red("Skipping V1 metrics for time"), fill = TRUE)
+  cat(red("Skipping V1 metrics for time"), fill = TRUE)
 }
 
 if (!skip_perms) {
-cat(crayon::magenta("About to execute permutation runs, ugh!"), fill = TRUE)
-cat(crayon::red("Only for expanding rings right now!!!"), fill = TRUE)
-
-metrics_sc_perm <- split_data_sc %>% 
-  select(stim_type, fold_num) %>% 
-  filter(stim_type == "ring_expand") %>% 
-  nest(params = -stim_type) %>% 
-  # This is the number of permutation iterations!!!!
-  slice(rep(1:n(), times = 200)) %>% 
-  mutate(iteration = 1:n(),
-         permute_order = map(iteration,
-                             \(x) {
-                               # x is never actually called bc we just need to run 
-                               # the exact same code hella times
-                               split_data_sc %>% 
-                                 # Fold num doesn't matter bc we're only operating over subj and TR IDs
-                                 pull(data) %>% 
-                                 pluck(1) %>% 
-                                 get_permuted_order()
-                             },
-                             .progress = "Permuting TR order")) %>% 
-  unnest(params) %>% 
-  mutate(metric = purrr::pmap(list(stim_type, fold_num, permute_order),
-                              \(stim, fold, perm) {
-                                split_data_sc %>% 
-                                  filter(stim_type == stim, fold_num == fold) %>% 
-                                  pull(data) %>% 
-                                  pluck(1) %>% 
-                                  get_pls_metrics(permute_order = perm)
-                              },
-                              .progress = "Permutation run in series :(")) %>% 
-  unnest_wider(metric)
-
-write_rds(metrics_sc_perm, here::here("ignore", "outputs", "studyforrest_retinotopy_sc_pls_ring_expand_metrics_permuted.rds"))
+  cat("About to execute " %+% magenta$bold(n_perms) %+% " full permutation runs, ugh!", fill = TRUE)
+  # cat(red("Only for expanding rings right now!!!"), fill = TRUE)
+  
+  metrics_sc_perm <- split_data_sc %>% 
+    select(stim_type, fold_num) %>% 
+    # by nesting everything in, two stim conditions in the same iteration number
+    # have the same permutation shuffles
+    # idk that it matters that much but I feel better about
+    # doing paired within-permutation statistics this way
+    nest(params = everything()) %>% 
+    # This is the number of permutation iterations!!!!
+    slice(rep(1:n(), times = n_perms)) %>% 
+    mutate(iteration = 1:n(),
+           permute_order = map(iteration,
+                               \(x) {
+                                 # x is never actually called bc we just need to run 
+                                 # the exact same code hella times
+                                 split_data_sc %>% 
+                                   # Fold num doesn't matter bc we're only operating over subj and TR IDs
+                                   pull(data) %>% 
+                                   pluck(1) %>% 
+                                   get_permuted_order()
+                               },
+                               .progress = "Permuting TR order")) %>% 
+    unnest(params)
+  
+  if (in_parallel) {
+    cat("About to run " %+% red$bold(nrow(metrics_sc_perm)) %+% " total perms in parallel", fill = TRUE)
+    metrics_sc_perm %<>% 
+      mutate(metric = furrr::future_pmap(list(stim_type, fold_num, permute_order),
+                                         \(stim, fold, perm) {
+                                           split_data_sc %>% 
+                                             filter(stim_type == stim, fold_num == fold) %>% 
+                                             pull(data) %>% 
+                                             pluck(1) %>% 
+                                             get_pls_metrics(permute_order = perm)
+                                         },
+                                         .progress = TRUE))
+    
+  } else {
+    metrics_sc_perm %<>% 
+      mutate(metric = purrr::pmap(list(stim_type, fold_num, permute_order),
+                                  \(stim, fold, perm) {
+                                    split_data_sc %>% 
+                                      filter(stim_type == stim, fold_num == fold) %>% 
+                                      pull(data) %>% 
+                                      pluck(1) %>% 
+                                      get_pls_metrics(permute_order = perm)
+                                  },
+                                  .progress = "Permutation run in series :("))
+  }
+  metrics_sc_perm %<>% 
+    unnest_wider(metric)
+  
+  write_rds(metrics_sc_perm, here::here("ignore", "outputs", "studyforrest_retinotopy_sc_pls_metrics_permuted.rds"))
 } else {
-  cat(crayon::red("Skipping permutation runs for time"), fill = TRUE)
+  cat(red("Skipping permutation runs for time"), fill = TRUE)
 }
