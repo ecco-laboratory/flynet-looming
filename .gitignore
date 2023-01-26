@@ -134,3 +134,4 @@ dmypy.json
 # Ne touche pas
 ignore/*
 .Rproj.user
+.Rhistory
