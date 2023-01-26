@@ -147,7 +147,7 @@ metrics_sc <- read_rds(here::here("ignore", "outputs", "studyforrest_retinotopy_
 
 metrics_v1 <- read_rds(here::here("ignore", "outputs", "studyforrest_retinotopy_v1_pls_metrics.rds"))
 
-metrics_sc_perm <- read_rds(here::here("ignore", "outputs", "studyforrest_retinotopy_sc_pls_ring_expand_metrics_permuted.rds"))
+metrics_sc_perm <- read_rds(here::here("ignore", "outputs", "studyforrest_retinotopy_sc_pls_metrics_permuted.rds"))
 ```
 
 ```{r regular-q2}
@@ -241,22 +241,105 @@ metrics_sc %>%
 
 ```{r q2-perm-pvals}
 metrics_sc_perm %>% 
-  select(fold_num, iteration, perf_overall) %>%
+  select(stim_type, fold_num, iteration, perf_overall) %>%
   unnest(perf_overall) %>% 
   filter(encoding_type != "groupavg") %>% 
-  group_by(iteration, encoding_type) %>% 
+  group_by(stim_type, iteration, encoding_type) %>% 
   summarize(q2 = mean(q2), .groups = "drop") %>% 
   left_join(metrics_sc %>% 
-              filter(stim_type == "ring_expand") %>% 
-              select(fold_num, perf_overall) %>% 
+              select(stim_type, fold_num, perf_overall) %>% 
               unnest(perf_overall) %>% 
-              group_by(encoding_type) %>% 
+              group_by(stim_type, encoding_type) %>% 
               summarize(q2_obs = mean(q2)),
-            by = c("encoding_type")) %>% 
-  group_by(encoding_type) %>% 
+            by = c("stim_type", "encoding_type")) %>% 
+  group_by(stim_type, encoding_type) %>% 
   summarize(pval = (sum(q2_obs < q2) + 1) / (n() + 1),
             q2_obs = mean(q2_obs)) %>% 
   arrange(pval)
+```
+
+```{r q2-stim-diff-perm-pvals}
+metrics_sc_perm %>% 
+  select(stim_type, fold_num, iteration, perf_overall) %>%
+  unnest(perf_overall) %>% 
+  filter(encoding_type != "groupavg") %>% 
+  group_by(stim_type, iteration, encoding_type) %>% 
+  summarize(q2 = mean(q2), .groups = "drop") %>% 
+  pivot_wider(names_from = stim_type, values_from = q2) %>% 
+  mutate(other_three = (ring_contract + wedge_clock + wedge_counter) / 3,
+         intxn = (ring_expand - ring_contract) - (wedge_counter - wedge_clock),
+         together = ring_expand - other_three) %>% 
+  select(-c(ring_expand, ring_contract, wedge_clock, wedge_counter, other_three)) %>% 
+  left_join(metrics_sc %>% 
+              select(stim_type, fold_num, perf_overall) %>% 
+              unnest(perf_overall) %>% 
+              filter(encoding_type != "groupavg") %>% 
+              group_by(stim_type, encoding_type) %>% 
+              summarize(q2 = mean(q2)) %>% 
+              pivot_wider(names_from = stim_type, values_from = q2) %>% 
+              mutate(other_three = (ring_contract + wedge_clock + wedge_counter) / 3,
+                     intxn_obs = (ring_expand - ring_contract) - (wedge_counter - wedge_clock),
+                     together_obs = ring_expand - other_three) %>% 
+              select(-c(ring_contract, wedge_clock, wedge_counter, other_three)),
+            by = "encoding_type") %>% 
+  group_by(encoding_type) %>% 
+  summarize(pval_together = (sum(together_obs < together) + 1) / (n() + 1),
+            pval_intxn = (sum(intxn_obs < intxn) + 1) / (n() + 1),
+            q2_obs = mean(ring_expand))
+```
+
+```{r q2-model-diff-perm-pvals}
+metrics_sc_perm %>% 
+  select(stim_type, fold_num, iteration, perf_overall) %>%
+  unnest(perf_overall) %>% 
+  filter(encoding_type != "groupavg") %>% 
+  group_by(stim_type, iteration, encoding_type) %>% 
+  summarize(q2 = mean(q2), .groups = "drop") %>% 
+  pivot_wider(names_from = encoding_type, values_from = q2) %>% 
+  mutate(q2_diff = flynet - prf) %>% 
+  select(-c(flynet, prf)) %>% 
+  left_join(metrics_sc %>% 
+              select(stim_type, fold_num, perf_overall) %>% 
+              unnest(perf_overall) %>% 
+              filter(encoding_type != "groupavg") %>% 
+              group_by(stim_type, encoding_type) %>% 
+              summarize(q2 = mean(q2)) %>% 
+              pivot_wider(names_from = encoding_type, values_from = q2) %>% 
+              mutate(q2obs_diff = flynet - prf),
+            by = "stim_type") %>% 
+  group_by(stim_type) %>% 
+  summarize(pval = (sum(q2obs_diff < q2_diff) + 1) / (n() + 1),
+            q2obs_diff = mean(q2obs_diff))
+```
+
+```{r}
+metrics_sc_perm %>% 
+  select(stim_type, fold_num, iteration, perf_overall) %>%
+  unnest(perf_overall) %>% 
+  filter(encoding_type != "groupavg") %>% 
+  group_by(stim_type, iteration, encoding_type) %>% 
+  summarize(q2 = mean(q2), .groups = "drop") %>% 
+  pivot_wider(names_from = stim_type, values_from = q2) %>% 
+  mutate(other_three = (ring_contract + wedge_clock + wedge_counter) / 3,
+         q2_diff = ring_expand - other_three) %>% 
+  select(-c(ring_expand, ring_contract, wedge_clock, wedge_counter, other_three)) %>% 
+  pivot_wider(names_from = encoding_type, values_from = q2_diff) %>% 
+  mutate(q2_diff = flynet - prf) %>% 
+  left_join(metrics_sc %>% 
+              select(stim_type, fold_num, perf_overall) %>% 
+              unnest(perf_overall) %>% 
+              filter(encoding_type != "groupavg") %>% 
+              group_by(stim_type, encoding_type) %>% 
+              summarize(q2 = mean(q2)) %>% 
+              pivot_wider(names_from = stim_type, values_from = q2) %>% 
+              mutate(other_three = (ring_contract + wedge_clock + wedge_counter) / 3,
+                     q2_diff = ring_expand - other_three) %>% 
+              select(-c(ring_expand, ring_contract, wedge_clock, wedge_counter, other_three)) %>% 
+              pivot_wider(names_from = encoding_type, values_from = q2_diff) %>% 
+              mutate(q2obs_diff = flynet - prf),
+            by = character()) %>% 
+  summarize(pval = (sum(q2obs_diff < q2_diff) + 1) / (n() + 1),
+            q2obs_diff = mean(q2obs_diff))
 ```
 
 Ask the boss man: why are the PLS predicted timecourses so much smaller standard deviation than the observed values?
