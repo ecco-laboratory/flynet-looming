@@ -42,12 +42,22 @@ flow_lourenco = read_and_calc_video_flow(
     '/home/mthieu/stimuli/lourenco_looming_rabbit.wmv',
     resize=(132,132)
 )
-flow_softball = read_and_calc_video_flow(
-    '/home/mthieu/Downloads/softball-hits-camera.mp4',
+flow_baseball = read_and_calc_video_flow(
+    '/home/mthieu/Downloads/baseball.mp4',
     resize=(132,132)
 )
 
 hit_probs_clery_2020 = get_hit_prob_timeseries(flow_clery_2020)
 hit_probs_lourenco = get_hit_prob_timeseries(flow_lourenco)
-hit_probs_softball = get_hit_prob_timeseries(flow_softball)
+hit_probs_baseball = get_hit_prob_timeseries(flow_baseball)
 # %%
+np.savetxt(
+    fname=os.path.join(output_path, 'hit_probs_lourenco.txt'),
+    X=hit_probs_lourenco,
+    fmt='%.6f'
+)
+np.savetxt(
+    fname=os.path.join(output_path, 'hit_probs_baseball.txt'),
+    X=hit_probs_baseball,
+    fmt='%.6f'
+)
