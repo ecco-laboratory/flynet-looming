@@ -14,6 +14,7 @@ from tqdm import trange
 # %%
 # set useful paths or something
 repo_path = '/home/mthieu/Repos/emonet-py/'
+stimuli_path = '/home/mthieu/stimuli/'
 output_path = os.path.join(repo_path, 'ignore', 'outputs')
 
 # %%
@@ -24,15 +25,16 @@ flow = read_and_calc_video_flow(movie_path, resize=(228,228), progress=True)
 
 # %%
 # Estimate dense optical flow for StudyForrest extension retinotopy stimuli
-studyforrest_retinotopy_stimuli_path = '/home/mthieu/stimuli/studyforrest_retinotopy'
+studyforrest_retinotopy_stimuli_path = os.path.join(stimuli_path, 'studyforrest_retinotopy')
 flow_ring_expand = read_and_calc_video_flow(os.path.join(studyforrest_retinotopy_stimuli_path, 'ring_expand.mp4'), resize=(132,132), progress=True)
 flow_ring_contract = read_and_calc_video_flow(os.path.join(studyforrest_retinotopy_stimuli_path, 'ring_contract.mp4'), resize=(132,132), progress=True)
 flow_wedge_clock = read_and_calc_video_flow(os.path.join(studyforrest_retinotopy_stimuli_path, 'wedge_clock.mp4'), resize=(132,132), progress=True)
 flow_wedge_counter = read_and_calc_video_flow(os.path.join(studyforrest_retinotopy_stimuli_path, 'wedge_counter.mp4'), resize=(132,132), progress=True)
 # %%
-# Estimate dense optical flow for Clery et al 2020 marmoset fMRI looming stimuli
-clery_2020_path = '/home/mthieu/stimuli/clery_2020_marmoset_stimulus.mp4'
-flow_clery_2020 = read_and_calc_video_flow(clery_2020_path, resize=(132,132), progress=True)
+# Estimate dense optical flow for NSD retinotopy stimuli
+nsd_retinotopy_stimuli_path = os.path.join(stimuli_path, 'nsd_retinotopy')
+flow_nsd_bar = read_and_calc_video_flow(os.path.join(nsd_retinotopy_stimuli_path, 'RETBAR.mp4'), resize=(132,132), progress=True)
+flow_nsd_wedgering = read_and_calc_video_flow(os.path.join(nsd_retinotopy_stimuli_path, 'RETWEDGERINGMASH.mp4'), resize=(132,132), progress=True)
 # %%
 # Load FlyNet
 megaflynet = MegaFlyNet(conv_stride=8)
@@ -83,6 +85,17 @@ activations_wedge_clock = megaflynet.conv(tensor_wedge_clock).reshape((tensor_we
 activations_wedge_counter = megaflynet.conv(tensor_wedge_counter).reshape((tensor_wedge_counter.size()[0], -1)).numpy()
 
 # %%
+# estimate NSD retinotopy "looming"
+tensor_nsd_bar = convert_flow_numpy_to_tensor(flow_nsd_bar)
+tensor_nsd_wedgering = convert_flow_numpy_to_tensor(flow_nsd_wedgering)
+
+hit_probs_nsd_bar = np.stack([megaflynet(tensor_nsd_bar[frame, ...].unsqueeze(0)).numpy() for frame in range(tensor_nsd_bar.size()[0])], axis=0)
+hit_probs_nsd_wedgering = np.stack([megaflynet(tensor_nsd_wedgering[frame, ...].unsqueeze(0)).numpy() for frame in range(tensor_nsd_wedgering.size()[0])], axis=0)
+
+activations_nsd_bar = megaflynet.conv(tensor_nsd_bar).reshape((tensor_nsd_bar.size()[0], -1)).numpy()
+activations_nsd_wedgering = megaflynet.conv(tensor_nsd_wedgering).reshape((tensor_nsd_wedgering.size()[0], -1)).numpy()
+
+# %%
 # write studyforrest retinotopy flynet activations to file
 np.savetxt(
     os.path.join(output_path, 'flynet_132x132_stride8_activations_studyforrest_retinotopy_ring_expand.csv'),
@@ -108,6 +121,21 @@ np.savetxt(
     fmt='%1.6f',
     delimiter=','
 )
+# %%
+# write nsd retinotopy flynet activations to file
+np.savetxt(
+    os.path.join(output_path, 'flynet_132x132_stride8_activations_nsd_retinotopy_bar.csv'),
+    activations_nsd_bar,
+    fmt='%1.6f',
+    delimiter=','
+)
+np.savetxt(
+    os.path.join(output_path, 'flynet_132x132_stride8_activations_nsd_retinotopy_wedgering.csv'),
+    activations_nsd_wedgering,
+    fmt='%1.6f',
+    delimiter=','
+)
+
 # %%
 # Visualize studyforrest retinotopy hit probs
 plt.figure(figsize=(9,1))
