@@ -4,9 +4,9 @@
 import os
 
 import numpy as np
-import pandas as pd
 import torch
-from myutils.video_dtw_utils import read_and_calc_video_flow
+from PIL import Image
+from myutils.video_dtw_utils import read_and_resize_video_frames, read_and_calc_video_flow, convert_flow_to_rgb_polar
 from myutils.flynet_utils import MegaFlyNet, convert_flow_numpy_to_tensor
 
 # %%
@@ -38,19 +38,45 @@ flow_clery_2020 = read_and_calc_video_flow(
     '/home/mthieu/stimuli/clery_2020_marmoset_stimulus.mp4',
     resize=(132,132)
 )
+lourenco = read_and_resize_video_frames(
+    '/home/mthieu/stimuli/lourenco_looming_rabbit.wmv',
+)
 flow_lourenco = read_and_calc_video_flow(
     '/home/mthieu/stimuli/lourenco_looming_rabbit.wmv',
     resize=(132,132)
+)
+flow_lourenco_origsize = read_and_calc_video_flow(
+    '/home/mthieu/stimuli/lourenco_looming_rabbit.wmv',
+)
+baseball = read_and_resize_video_frames(
+    '/home/mthieu/Downloads/baseball.mp4'
+)
+flow_baseball_origsize = read_and_calc_video_flow(
+    '/home/mthieu/Downloads/baseball.mp4'
 )
 flow_baseball = read_and_calc_video_flow(
     '/home/mthieu/Downloads/baseball.mp4',
     resize=(132,132)
 )
+bower = read_and_resize_video_frames(
+    '/home/mthieu/stimuli/looming_bower_1971_small.mp4'
+)
+flow_bower = read_and_calc_video_flow(
+    '/home/mthieu/stimuli/looming_bower_1971_small.mp4',
+    resize=(132,132),
+    progress=True
+)
+flow_bower_origsize = read_and_calc_video_flow(
+    '/home/mthieu/stimuli/looming_bower_1971_small.mp4',
+    progress=True
+)
 
 hit_probs_clery_2020 = get_hit_prob_timeseries(flow_clery_2020)
 hit_probs_lourenco = get_hit_prob_timeseries(flow_lourenco)
 hit_probs_baseball = get_hit_prob_timeseries(flow_baseball)
+hit_probs_bower = get_hit_prob_timeseries(flow_bower)
 # %%
+# save hit probs to file
 np.savetxt(
     fname=os.path.join(output_path, 'hit_probs_lourenco.txt'),
     X=hit_probs_lourenco,
@@ -61,3 +87,14 @@ np.savetxt(
     X=hit_probs_baseball,
     fmt='%.6f'
 )
+np.savetxt(
+    fname=os.path.join(output_path, 'hit_probs_bower.txt'),
+    X=hit_probs_bower,
+    fmt='%.6f'
+)
+
+# %%
+# Render previews of specific flow moments
+flow_rgb_baseball = convert_flow_to_rgb_polar(flow_baseball_origsize)
+flow_rgb_lourenco = convert_flow_to_rgb_polar(flow_lourenco_origsize)
+flow_rgb_bower = convert_flow_to_rgb_polar(flow_bower_origsize)
