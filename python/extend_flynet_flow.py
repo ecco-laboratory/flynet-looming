@@ -14,7 +14,7 @@ from tqdm import trange
 # %%
 # set useful paths or something
 repo_path = '/home/mthieu/Repos/emonet-py/'
-stimuli_path = '/home/mthieu/stimuli/'
+stimuli_path = os.path.join(repo_path, 'ignore', 'stimuli')
 output_path = os.path.join(repo_path, 'ignore', 'outputs')
 
 # %%
@@ -98,25 +98,25 @@ activations_nsd_wedgering = megaflynet.conv(tensor_nsd_wedgering).reshape((tenso
 # %%
 # write studyforrest retinotopy flynet activations to file
 np.savetxt(
-    os.path.join(output_path, 'flynet_132x132_stride8_activations_studyforrest_retinotopy_ring_expand.csv'),
+    os.path.join(output_path, 'flynet_activations', '132x132_stride8', 'studyforrest_retinotopy', 'ring_expand.csv'),
     activations_ring_expand,
     fmt='%1.6f',
     delimiter=','
     )
 np.savetxt(
-    os.path.join(output_path, 'flynet_132x132_stride8_activations_studyforrest_retinotopy_ring_contract.csv'),
+    os.path.join(output_path, 'flynet_activations', '132x132_stride8', 'studyforrest_retinotopy', 'ring_contract.csv'),
     activations_ring_contract,
     fmt='%1.6f',
     delimiter=','
 )
 np.savetxt(
-    os.path.join(output_path, 'flynet_132x132_stride8_activations_studyforrest_retinotopy_wedge_clock.csv'),
+    os.path.join(output_path, 'flynet_activations', '132x132_stride8', 'studyforrest_retinotopy', 'wedge_clock.csv'),
     activations_wedge_clock,
     fmt='%1.6f',
     delimiter=','
 )
 np.savetxt(
-    os.path.join(output_path, 'flynet_132x132_stride8_activations_studyforrest_retinotopy_wedge_counter.csv'),
+    os.path.join(output_path, 'flynet_activations', '132x132_stride8', 'studyforrest_retinotopy', 'wedge_counter.csv'),
     activations_wedge_counter,
     fmt='%1.6f',
     delimiter=','
@@ -124,13 +124,13 @@ np.savetxt(
 # %%
 # write nsd retinotopy flynet activations to file
 np.savetxt(
-    os.path.join(output_path, 'flynet_132x132_stride8_activations_nsd_retinotopy_bar.csv'),
+    os.path.join(output_path, 'flynet_activations', '132x132_stride8', 'nsd_retinotopy', 'bar.csv'),
     activations_nsd_bar,
     fmt='%1.6f',
     delimiter=','
 )
 np.savetxt(
-    os.path.join(output_path, 'flynet_132x132_stride8_activations_nsd_retinotopy_wedgering.csv'),
+    os.path.join(output_path, 'flynet_activations', '132x132_stride8', 'nsd_retinotopy', 'wedgering.csv'),
     activations_nsd_wedgering,
     fmt='%1.6f',
     delimiter=','

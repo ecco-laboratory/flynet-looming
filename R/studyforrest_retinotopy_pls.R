@@ -15,76 +15,15 @@ in_parallel <- TRUE
 
 if (in_parallel) {
   # Not trying to blow up node1
-  n_cores <- 16
+  n_cores <- 48
   options(mc.cores = n_cores)
   future::plan("multicore", workers = n_cores)
-  cat("Will run permutations in parallel with " %+% green(n_cores) %+% " cores", fill = TRUE)
+  cat("Will run in parallel with " %+% green(n_cores) %+% " cores", fill = TRUE)
 }
 
-# using the parameters to reproduce the SPM default HRF
-# SPM uses a 32-s kernel, mind thee
-double_gamma_hrf <- function (time, shape1 = 6, shape2 = 16, scale1 = 1, scale2 = 1, scale_undershoot = 1/6) {
-  gamma1 <- dgamma(time, shape = shape1, scale = scale1)
-  gamma2 <- scale_undershoot * dgamma(time, shape = shape2, scale = scale2)
-  
-  return (gamma1 - gamma2)
-}
+flynet_activation_studyforrest <- read_rds(here::here("ignore", "outputs", "studyforrest_retinotopy_flynet_timecourses.rds"))
+flynet_activation_nsd <- read_rds(here::here("ignore", "outputs", "studyforrest_retinotopy_flynet_timecourses.rds"))
 
-convolve_hrf <- function (input, kernel_length = 32, tr = 2) {
-  out <- convolve(input, rev(double_gamma_hrf(seq(0, kernel_length, tr))), type = "open")
-  # trim back down to the original timecourse length
-  out <- out[1:length(input)]
-  return (out)
-}
-
-## get flynet activation timecourses ----
-
-activation_ints_convolved <- tibble(stim_type = c("ring_expand", "ring_contract", "wedge_clock", "wedge_counter")) %>% 
-  mutate(data = map(stim_type,
-                    ~read_csv(
-                      here::here("ignore",
-                                 "outputs",
-                                 paste0("flynet_132x132_stride8_activations_studyforrest_retinotopy_",
-                                        .x,
-                                        ".csv")),
-                      col_names = paste0("unit_", 1:256)))) %>% 
-  unnest(data) %>% 
-  group_by(stim_type) %>% 
-  # adjust flow-frame up by 1 to account for the fact
-  # that flow can only be calculated starting on the second actual frame
-  mutate(frame_num = (1:n()) + 1L,
-         # frames are 25 fps, so TRs are 50 frames
-         # int division starts TR count at 0, bump up to 3
-         # because the first 2 TRs are rest, per the data paper
-         tr_num = frame_num %/% 50L + 3L) %>% 
-  ungroup() %>% 
-  select(stim_type, frame_num, tr_num, everything()) %>% 
-  pivot_longer(cols = starts_with("unit"),
-               names_to = "rf",
-               values_to = "activation",
-               names_prefix = "unit_",
-               names_transform = list(rf = as.integer)) %>% 
-  nest(activations = -c(stim_type, tr_num, rf)) %>% 
-  mutate(coefs = map(activations,
-                     ~lm(activation ~ scale(frame_num, scale = FALSE), data = .) %>% 
-                       pluck("coefficients"),
-                     .progress = "RF activation slopes")) %>% 
-  select(-activations) %>% 
-  unnest_wider(coefs) %>% 
-  rename(intercept = "(Intercept)", slope = "scale(frame_num, scale = FALSE)") %>% 
-  # DROP SLOPES BECAUSE WE AREN'T ANALYZING THEM IN THIS THING AT PRESENT
-  select(-slope) %>% 
-  pivot_wider(id_cols = c(stim_type, tr_num),
-              names_from = rf,
-              values_from = intercept,
-              names_prefix = "intercept_") %>% 
-  group_by(stim_type) %>% 
-  # tidymodels step_convolve was proposed and then... cancelled by requester?
-  # so we have to do this before pushing through recipes
-  mutate(across(starts_with("intercept"), \(x) c(scale(convolve_hrf(x))))) %>% 
-  ungroup()
-
-write_rds(activation_ints_convolved, here::here("ignore", "outputs", "studyforrest_retinotopy_flynet_timecourses.rds"))
 
 ## get fmri data ----
 cat(magenta("Reading in brain data"), fill = TRUE)
@@ -92,22 +31,67 @@ cat(magenta("Reading in brain data"), fill = TRUE)
 # subject by voxel by timepoint by condition
 # note: Matlab by default, and thus Phil’s CANLabTools,
 # repeats fastest along x, then y, then z when making mask voxels and other arrays long
-get_phil_matlab_fmri_data <- function (file, region, tr_start = NULL, tr_end = NULL, verbose = FALSE) {
-  stim_types <- c("wedge_counter", "wedge_clock", "ring_contract", "ring_expand")
+get_phil_matlab_fmri_data <- function (file, region, dataset = "studyforrest", tr_start = NULL, tr_end = NULL, verbose = FALSE) {
+  
   data_mat <- R.matlab::readMat(file, verbose = verbose)
+  
+  if (dataset == "studyforrest") {
+    stim_types <- c("wedge_counter", "wedge_clock", "ring_contract", "ring_expand")
+    dim_subj <- 1
+    dim_voxel <- 2
+    dim_tr <- 3
+    dim_run <- 4
+    
+    # crossing() repeats the last columns fastest
+    # so specify the dim-columns in reverse order from how they appear in the matlab data
+    # R also repeats fastest along the first dim when representing arrays as vectors
+    data <- crossing(stim_type = 1:dim(data_mat$DATA)[dim_run],
+                     tr_num = 1:dim(data_mat$DATA)[dim_tr],
+                     voxel = 1:dim(data_mat$DATA)[dim_voxel],
+                     subj_num = 1:dim(data_mat$DATA)[dim_subj]) %>% 
+      # Jan 31 2023: HORROR OF HORRORS, crossing() reorders character vectors into ALPHABETICAL
+      # before repeating. WHY!!!
+      mutate(stim_type = dplyr::recode(stim_type,
+                                       `1` = "wedge_counter",
+                                       `2` = "wedge_clock",
+                                       `3` = "ring_contract",
+                                       `4` = "ring_expand"))
+  } else if (dataset == "nsd") {
+    stim_types <- c("bar", "wedgering", "floc", "floc")
+    dim_subj <- 1
+    dim_voxel <- 4
+    dim_tr <- 3
+    dim_run <- 2
+    
+    # Do these inside the dataset ifs so we don't have to do funny business
+    # in re-naming the columns by position
+    # bc the cols in crossing must be specified in reverse .mat dims order
+    data <- crossing(voxel = 1:dim(data_mat$DATA)[dim_voxel],
+                     tr_num = 1:dim(data_mat$DATA)[dim_tr],
+                     # this should reproduce the repeat structure described in NSD docs
+                     stim_type = 1:dim(data_mat$DATA)[dim_run],
+                     subj_num = 1:dim(data_mat$DATA)[dim_subj]) %>% 
+      mutate(stim_type = dplyr::recode(stim_type,
+                                       `1` = "bar_1",
+                                       `2` = "wedgering_1",
+                                       `3` = "floc_1",
+                                       `4` = "floc_2",
+                                       `5` = "bar_2",
+                                       `6` = "wedgering_2",
+                                       `7` = "floc_3",
+                                       `8` = "floc_4",
+                                       `9` = "bar_3",
+                                       `10` = "wedgering_3",
+                                       `11` = "floc_5",
+                                       `12` = "floc_6"))
+  }
   
   # if start and end TRs to filter are not specified,
   # default to all the TRs
   if (is.null(tr_start)) tr_start <- 1
-  if (is.null(tr_end)) tr_end <- dim(data_mat$DATA)[3]
+  if (is.null(tr_end)) tr_end <- dim(data_mat$DATA)[dim_tr]
   
-  # crossing() repeats the last columns fastest
-  # so specify the dim-columns in reverse order from how they appear in the matlab data
-  # R also repeats fastest along the first dim when representing arrays as vectors
-  data <- crossing(stim_type = stim_types,
-                      tr_num = 1:dim(data_mat$DATA)[3],
-                      voxel = 1:dim(data_mat$DATA)[2],
-                      subj_num = 1:dim(data_mat$DATA)[1]) %>%
+  data %<>%
     mutate(bold = as.vector(data_mat$DATA)) %>%
     pivot_wider(id_cols = c(subj_num, stim_type, tr_num),
                 names_from = voxel,
@@ -136,6 +120,12 @@ sc_data <- get_phil_matlab_fmri_data("/home/data/eccolab/studyforrest-data-phase
                                      region = "sc",
                                      tr_start = 3,
                                      tr_end = 82)
+
+sc_nsd_data <- get_phil_matlab_fmri_data("/home/mthieu/nsd_retinotopy_bold_sc.mat",
+                                    region = "sc",
+                                    dataset = "nsd",
+                                    tr_end = 301) %>% 
+  filter(!startsWith(stim_type, "floc"))
 
 mask_nifti <- RNifti::readNifti("/home/data/eccolab/studyforrest-data-phase2/SC_mask_vox_indx.nii")
 
@@ -176,7 +166,7 @@ if (!skip_v1) {
 cat(magenta("Making split data for modeling"), fill = TRUE)
 
 split_data_sc <- sc_data %>% 
-  left_join(activation_ints_convolved,
+  left_join(flynet_activation_studyforrest,
             by = c("stim_type", "tr_num")) %>% 
   nest(data = -stim_type) %>% 
   slice(rep(1:n(), times = n_folds)) %>% 
@@ -202,7 +192,7 @@ split_data_sc <- sc_data %>%
 
 if (!skip_v1) {
   split_data_v1 <- v1_data %>% 
-    left_join(activation_ints_convolved,
+    left_join(flynet_activation_studyforrest,
               by = c("stim_type", "tr_num")) %>% 
     nest(data = -stim_type) %>% 
     slice(rep(1:n(), times = n_folds)) %>% 
@@ -260,8 +250,8 @@ if (!skip_v1) {
 pls_workflow <- workflow() %>% 
   # mixOmics is the only available engine so just leave it
   add_model(parsnip::pls(mode = "regression",
-                         predictor_prop = 0.5,
-                         num_comp = 3L))
+                         predictor_prop = 1,
+                         num_comp = 20L))
 
 ## actually fit shit ----
 
@@ -337,7 +327,8 @@ get_pls_metrics <- function (in_data, region = "sc", permute_order = NULL, retur
                  names_pattern = paste0("(.*)_", region, "_(.*)"),
                  names_transform = list(voxel_num = as.integer)) %>% 
     pivot_wider(names_from = encoding_type,
-                values_from = .pred)
+                values_from = .pred,
+                names_prefix = "pred_")
   
   # fit the variance explained model between the two pls-predicted timecourses
   var_explained <- pred %>% 
@@ -345,8 +336,8 @@ get_pls_metrics <- function (in_data, region = "sc", permute_order = NULL, retur
     select(-split_type) %>% 
     # normalize the predicted timecourses before checking variance explained stuff
     # so that the the lm betas are on the same scale
-    mutate(across(c(flynet, prf), \(x) c(scale(x)))) %>% 
-    lm(obs ~ flynet + prf, data = .) %>% 
+    mutate(across(starts_with("pred_"), \(x) c(scale(x)))) %>% 
+    lm(obs ~ pred_flynet + pred_prf, data = .) %>% 
     tidy() %>% 
     select(term, estimate) %>% 
     filter(term != "(Intercept)")
@@ -356,7 +347,7 @@ get_pls_metrics <- function (in_data, region = "sc", permute_order = NULL, retur
     # NOT grouping by split_type bc groupavg should be taken across the train and test subjs
     group_by(voxel_num, tr_num) %>% 
     mutate(groupavg = mean(obs, na.rm = TRUE),
-           across(c(flynet, prf, groupavg), \(x) {x - obs}, .names = "error_{.col}")) %>% 
+           across(c(flynet, prf, groupavg), \(x) {obs - x}, .names = "error_{.col}")) %>% 
     select(-c(flynet, prf, groupavg)) %>% 
     pivot_longer(cols = starts_with("error"),
                  names_to = "encoding_type",
@@ -376,13 +367,14 @@ get_pls_metrics <- function (in_data, region = "sc", permute_order = NULL, retur
   perf_subj <- pred %>% 
     filter(split_type == "test") %>% 
     # NOT grouping by encoding_type bc groupavg should be taken across the train and test subjs
-    mutate(across(c(flynet, prf), \(x) {x - obs}, .names = "error_{.col}")) %>% 
+    rename_with(.cols = c(flynet, prf))
+    mutate(across(c(flynet, prf), \(x) {obs - x}, .names = "error_{.col}")) %>% 
     select(-flynet, -prf) %>% 
     pivot_longer(cols = starts_with("error"),
                  names_to = "encoding_type",
                  values_to = "error",
                  names_prefix = "error_") %>% 
-    group_by(encoding_type, subj_num) %>% 
+    group_by(encoding_type, subj_num, voxel_num) %>% 
     summarize(tss = sum((obs - mean(obs))^2),
               rss = sum(error^2),
               .groups = "drop") %>% 
@@ -394,7 +386,7 @@ get_pls_metrics <- function (in_data, region = "sc", permute_order = NULL, retur
   perf_voxel <- pred %>% 
     filter(split_type == "test") %>% 
     # NOT grouping by encoding_type bc groupavg should be taken across the train and test subjs
-    mutate(across(c(flynet, prf), \(x) {x - obs}, .names = "error_{.col}")) %>% 
+    mutate(across(c(flynet, prf), \(x) {obs - x}, .names = "error_{.col}")) %>% 
     select(-flynet, -prf) %>% 
     pivot_longer(cols = starts_with("error"),
                  names_to = "encoding_type",
@@ -430,14 +422,23 @@ metrics_sc <- split_data_sc %>%
 write_rds(metrics_sc, here::here("ignore", "outputs", "studyforrest_retinotopy_sc_pls_metrics.rds"))
 
 if (!skip_v1) {
-  # Lol ugh it's fucking huge
-  metrics_v1 <- split_data_v1 %>% 
-    mutate(metric = map(data,
-                        \(x) get_pls_metrics(x, region = "v1", return_preds = TRUE), 
-                        .progress = "v1 model fittin n metric calc")) %>% 
-    select(-data) %>% 
-    unnest_wider(metric)
-  
+  if (in_parallel) {
+    # Lol ugh it's fucking huge
+    metrics_v1 <- split_data_v1 %>% 
+      mutate(metric = furrr::future_map(data,
+                          \(x) get_pls_metrics(x, region = "v1", return_preds = TRUE), 
+                          .progress = TRUE)) %>% 
+      select(-data) %>% 
+      unnest_wider(metric)
+  } else {
+    # Lol ugh it's fucking huge
+    metrics_v1 <- split_data_v1 %>% 
+      mutate(metric = map(data,
+                          \(x) get_pls_metrics(x, region = "v1", return_preds = TRUE), 
+                          .progress = "v1 model fittin n metric calc")) %>% 
+      select(-data) %>% 
+      unnest_wider(metric)
+  }
   write_rds(metrics_v1, here::here("ignore", "outputs", "studyforrest_retinotopy_v1_pls_metrics.rds"))
 } else {
   cat(red("Skipping V1 metrics for time"), fill = TRUE)

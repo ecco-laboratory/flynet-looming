@@ -1,0 +1,3 @@
+main:
+  script: R/_targets.R
+  store: ignore/_targets
