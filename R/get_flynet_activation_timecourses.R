@@ -44,10 +44,11 @@ get_flynet_activation <- function (file, fps, tr_length, tr_start_offset) {
     pivot_wider(id_cols = tr_num,
                 names_from = rf,
                 values_from = intercept,
-                names_prefix = "intercept_") %>% 
+                # use a more agnostic name because this is going to be the general prefix for any predictor
+                names_prefix = "unit_") %>% 
     # tidymodels step_convolve was proposed and then... cancelled by requester?
     # so we have to do this before pushing through recipes
-    mutate(across(starts_with("intercept"), \(x) c(scale(convolve_hrf(x)))))
+    mutate(across(starts_with("unit"), \(x) c(scale(convolve_hrf(x)))))
     
   return (out)
 }
@@ -65,9 +66,10 @@ get_flynet_activation_studyforrest <- function (files) {
                                                  tr_start_offset = 2
                       ))) %>% 
     unnest(data) %>% 
-    # get the filename (without folders and without file extension) as the condition
+    # get the filename (without folders and without file extension) as the run name
+    # which in this case is also stimulus type
     mutate(filename = str_split(filename, pattern = "[/.]"),
-           stim_type = map_chr(filename, \(x) x[length(x) - 1])) %>% 
+           run_type = map_chr(filename, \(x) x[length(x) - 1])) %>% 
     select(-filename)
   
   return (out)
@@ -84,25 +86,10 @@ get_flynet_activation_nsd <- function (files) {
                       ))) %>% 
     unnest(data) %>% 
     mutate(filename = str_split(filename, pattern = "[/.]"),
-           filename = map_chr(filename, \(x) x[length(x) - 1]),
-           stim_type = case_when(filename == "bar" & tr_num < 16 ~ NA_character_,
-                                 filename == "bar" & tr_num < 45 ~ "bar_right",
-                                 filename == "bar" & tr_num < 80 ~ "bar_up",
-                                 filename == "bar" & tr_num < 113 ~ "bar_left",
-                                 filename == "bar" & tr_num < 156 ~ "bar_down",
-                                 filename == "bar" & tr_num < 188 ~ "bar_upright",
-                                 filename == "bar" & tr_num < 221 ~ "bar_upleft",
-                                 filename == "bar" & tr_num < 252 ~ "bar_downleft",
-                                 filename == "bar" & tr_num < 281 ~ "bar_downright",
-                                 filename == "wedgering" & tr_num < 22 ~ NA_character_, 
-                                 filename == "wedgering" & tr_num < 86 ~ "wedge_counter", 
-                                 filename == "wedgering" & tr_num < 147 ~ "ring_expand", 
-                                 filename == "wedgering" & tr_num < 150 ~ NA_character_, 
-                                 filename == "wedgering" & tr_num < 214 ~ "wedge_clock", 
-                                 filename == "wedgering" & tr_num < 275 ~ "ring_contract", 
-                                 TRUE ~ NA_character_))
-  # Leave filename in there for now so we can bind this to the fMRI data by filename
-  # and not by this ridiculous recoding of the stimulus segments
+           run_type = map_chr(filename, \(x) x[length(x) - 1])) %>% 
+    select(-filename)
+  # Leave run_id in there so we can bind this to the fMRI data by filename
+  # but note that it will need suffixes because the stim videos are repeated in different runs
   
   return (out)
 }
