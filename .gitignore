@@ -131,6 +131,9 @@ dmypy.json
 # Mac Finder system files
 *.DS_Store
 
+# R future temp files
+.future/*
+
 # Ne touche pas
 ignore/*
 .Rproj.user
