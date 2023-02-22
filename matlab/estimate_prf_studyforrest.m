@@ -4,12 +4,12 @@
 addpath(genpath('/home/data/eccolab/Code/analyzePRF'));
 
 trLength = 2;
-nFolds = 5;
+nFolds = 15;
 
 %% read fMRI data
 
 % ATTEND TO WHAT THIS PATH IS
-fmriData = load('/home/data/eccolab/studyforrest-data-phase2/V1_DATA_bpf.mat');
+fmriData = load('/home/data/eccolab/studyforrest-data-phase2/DATA_bpf.mat');
 % put the stimulus dimension first because we're going to do it a stim at a
 % time
 % comes in as: subj, voxel, time, condition
@@ -63,6 +63,7 @@ for stimNum=1:size(fmriData, 1)
         disp(append("starting fold ", string(fold)))
         %% drop the held-out test subjs
         % every 5th subject (to align with the R PLS encoding model script)
+        % Incidentally this seems to also work with n subjs folds (aka leave one out)
         testSubjs = fold:nFolds:size(fmriData, 2);
         trainSubjsLogical = true(size(fmriData, 2), 1);
         trainSubjsLogical(testSubjs) = false;
@@ -136,4 +137,4 @@ end
 disp('saving!!!')
 % reorganize dims back into the dim order of Phil's fMRI data output
 DATA = permute(fmriPred, [2 3 4 1]);
-save /home/data/eccolab/studyforrest-data-phase2/pred_v1_prf_xval.mat DATA
+save /home/data/eccolab/studyforrest-data-phase2/pred_sc_prf_xval.mat DATA
