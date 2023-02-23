@@ -1,0 +1,46 @@
+---
+title: "Looming learning task power analysis"
+format: html
+---
+
+```{r setup}
+#| include: false
+#| 
+library(tidyverse)
+
+get_q <- function (q_prev, alpha, delta) {
+  
+}
+```
+
+## Setting hyperparameters
+
+```{r}
+levels_semantic <- c("rabbit", "snake")
+levels_origin <- c("left", "right")
+hyperparameters <- crossing(semantic = levels_semantic,
+         origin = levels_origin) %>% 
+  mutate(p_end_left = case_when(semantic == "rabbit" ~ 0.6,
+                                TRUE ~ 0.2),
+         p_end_middle = 0.2,
+         p_end_right = case_when(semantic == "snake" ~ 0.6,
+                                 TRUE ~ 0.2),
+         total = p_end_left + p_end_middle + p_end_right)
+```
+
+```{r}
+trials <- tibble(trial_num = 1:100) %>% 
+  mutate(semantic = sample(levels_semantic, size = n(), replace = TRUE),
+         origin = sample(levels_origin, size = n(), replace = TRUE),
+         destination = map2_chr(semantic, origin, \(x, y) {
+           these_params <- hyperparameters %>% 
+             filter(semantic == x, origin == y)
+           out <- sample(c("left", "middle", "right"),
+                         size = 1,
+                         prob = c(these_params$p_end_left,
+                                  these_params$p_end_middle,
+                                  these_params$p_end_right))
+           return (out)
+         }))
+```
+
