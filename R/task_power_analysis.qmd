@@ -8,8 +8,21 @@ format: html
 #| 
 library(tidyverse)
 
-get_q <- function (q_prev, alpha, delta) {
+get_q <- function (reward, q_prev, alpha = 0.5) {
+  # delta is prediction error
+  q <- q_prev + alpha * (reward - q_prev)
+
+}
+# Handles an arbitrary number of response options
+# because it requires the responses to be fed in as vector names
+choose_response <- function (qs, beta = 1) {
+  stopifnot(!is.null(names(qs)))
   
+  # beta is inverse temperature
+  # ps should come out named because qs are named
+  ps <- exp(beta * qs) / sum(exp(beta * qs))
+  choice <- sample(names(ps), size = 1, prob = ps)
+  return (choice)
 }
 ```
 
@@ -18,29 +31,86 @@ get_q <- function (q_prev, alpha, delta) {
 ```{r}
 levels_semantic <- c("rabbit", "snake")
 levels_origin <- c("left", "right")
+levels_destination <- c("left", "middle", "right")
+
 hyperparameters <- crossing(semantic = levels_semantic,
-         origin = levels_origin) %>% 
-  mutate(p_end_left = case_when(semantic == "rabbit" ~ 0.6,
-                                TRUE ~ 0.2),
-         p_end_middle = 0.2,
-         p_end_right = case_when(semantic == "snake" ~ 0.6,
-                                 TRUE ~ 0.2),
-         total = p_end_left + p_end_middle + p_end_right)
+                            origin = levels_origin,
+                            destination = levels_destination) %>% 
+  mutate(state = paste(semantic, origin, destination, sep = "_"),
+         prob = case_when(semantic == "rabbit" & destination == "left" ~ 0.6, 
+                                semantic == "snake" & destination == "right" ~ 0.6,
+                                TRUE ~ 0.2))
+
+# check that the probabilities for the 3 destination options for each semantic-origin state sum to 1
+hyperparameters %>% 
+  group_by(semantic, origin) %>% 
+  summarize(sum(prob))
 ```
 
 ```{r}
-trials <- tibble(trial_num = 1:100) %>% 
+qs_initial <- set_names(rep(0, times = nrow(hyperparameters)),
+                                 nm = hyperparameters$state)
+
+trials <- tibble(trial_num = 1:500) %>% 
   mutate(semantic = sample(levels_semantic, size = n(), replace = TRUE),
          origin = sample(levels_origin, size = n(), replace = TRUE),
          destination = map2_chr(semantic, origin, \(x, y) {
            these_params <- hyperparameters %>% 
              filter(semantic == x, origin == y)
-           out <- sample(c("left", "middle", "right"),
+           out <- sample(these_params$destination,
                          size = 1,
-                         prob = c(these_params$p_end_left,
-                                  these_params$p_end_middle,
-                                  these_params$p_end_right))
+                         prob = these_params$prob)
            return (out)
-         }))
+         }),
+         choice = NA_character_,
+         # If necessary, unnest_wider() can be used to pull each state's qs out into their own column
+         qs = rep(list(qs_initial), 
+                  times = n()))
+
+for (i in 1:nrow(trials)) {
+  if (i == 1) {
+    qs_prev <- qs_initial
+  } else {
+    qs_prev <- trials$qs[[i-1]]
+  }
+  
+  qs_relevant <- qs_prev[startsWith(names(qs_prev), paste(trials$semantic[i], trials$origin[i], sep = "_"))]
+  # reset the names of qs_relevant to only have the response choices
+  # so setting the choice column doesn't set to the whole state
+  names(qs_relevant) <- str_split(names(qs_relevant), pattern = "_") %>% map_chr(pluck, 3)
+  
+  # Only feed in the q-values relevant to the current possible states
+  # (where object semantic and origin are already known, but destination must be chosen)
+  trials$choice[i] <- choose_response(qs = qs_relevant, beta = 5)
+  state_current <- paste(trials$semantic[i], trials$origin[i], trials$choice[i], sep = "_")
+  # If you chose WRONG and got smacked
+  # punishment value for getting hit is -1
+  if (trials$choice[i] == trials$destination[i]) {
+    outcome_value <- -2
+  } else {
+    outcome_value <- 0
+  }
+  
+  q_chosen_current <- get_q(reward = outcome_value, 
+                            q_prev = qs_prev[state_current],
+                            alpha = 0.5)
+  qs_current <- qs_prev
+  qs_current[state_current] <- q_chosen_current
+  trials$qs[i] <- list(qs_current)
+  
+}
+
+```
+
+# At what point do the q-values approximately stabilize?
+
+```{r}
+trials %>% 
+  select(trial_num, qs) %>% 
+  unnest_longer(qs, values_to = "q", indices_to = "state") %>% 
+  separate(state, into = c("semantic", "origin", "choice")) %>% 
+  ggplot(aes(x = trial_num, y = q, color = choice)) + 
+  geom_line() + 
+  facet_grid(origin ~ semantic)
 ```
 
