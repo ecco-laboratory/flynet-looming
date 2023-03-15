@@ -155,6 +155,8 @@ def read_and_calc_video_flow(path, resize = None, progress = False):
             frame_resized = frame.to_image()
             if resize is not None:
                 # go to PIL Image first to use the resize method
+                # Image.resize requires a 2-tuple for size!
+                # does not assume square when one value is passed in
                 frame_resized = frame_resized.resize(resize)
             frame_gray = ImageOps.grayscale(frame_resized)
             # Just to be sure, I think cv2 needs it as a numpy array
