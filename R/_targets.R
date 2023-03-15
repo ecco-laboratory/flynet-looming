@@ -53,7 +53,121 @@ conflicted::conflict_prefer("select", "dplyr")
 conflicted::conflict_prefer("map", "purrr")
 # source("other_functions.R") # Source other scripts as needed. # nolint
 
+## metadata files from other people's stuff ----
+
+target_ck2017_ratings <- tar_target(
+  name = ck2017_ratings,
+  command = "/home/mthieu/Repos/CowenKeltner/metadata/video_ratings.csv",
+  format = "file"
+)
+
+target_ck2017_censored <- tar_target(
+  name = ck2017_censored,
+  command = "/home/mthieu/Repos/CowenKeltner/metadata/censored_video_ids.csv",
+  format = "file"
+)
+
+target_ck2017_kragel2019_train <- tar_target(
+  name = ck2017_kragel2019_train,
+  command = "/home/mthieu/Repos/CowenKeltner/metadata/train_video_ids.csv",
+  format = "file"
+)
+
+target_ck2017_kragel2019_test <- tar_target(
+  name = ck2017_kragel2019_test,
+  command = "/home/mthieu/Repos/CowenKeltner/metadata/test_video_ids.csv",
+  format = "file"
+)
+
+target_ck2017_kragel2019_classes <- tar_target(
+  name = ck2017_kragel2019_classes,
+  command = {
+    censored <- read_csv(ck2017_censored)
+    bind_rows(train = read_csv(ck2017_kragel2019_train),
+              test = read_csv(ck2017_kragel2019_test),
+              .id = "split") %>% 
+      filter(!(emotion %in% c("Pride",
+                              "Satisfaction",
+                              "Sympathy",
+                              "Anger",
+                              "Admiration",
+                              "Calmness",
+                              "Relief",
+                              "Awkwardness",
+                              "Triumph",
+                              "Nostalgia"))) %>% 
+      mutate(censored = video %in% c(censored$less.bad, censored$very.bad))
+    }
+)
+
+target_zhou2022_weights <- tar_map(
+  values = tibble(filename = list.files(here::here("ignore",
+                                                   "models",
+                                                   "zhou2022"))),
+  tar_target(name = zhou2022_weights,
+             command = here::here("ignore",
+                                  "models",
+                                  "zhou2022",
+                                  filename),
+             format = "file")
+)
+
+## python scripts ----
+
+target_py_flynet_utils <- tar_target(
+  name = py_flynet_utils,
+  command = here::here("python",
+                       "myutils",
+                       "flynet_utils.py"),
+  format = "file"
+)
+
+target_py_convert_flynet_weights <- tar_target(
+  name = py_convert_flynet_weights,
+  command = here::here("python",
+                       "myutils",
+                       "convert_flynet_weights.py"),
+  format = "file"
+)
+
+target_py_calc_flynet_activations <- tar_target(
+  name = py_calc_flynet_activations,
+  command = here::here("python",
+                       "myutils",
+                       "calc_flynet_activations.py"),
+  format = "file"
+)
+
+## flynet setup stuff ----
+
+target_flynet_weights <- tar_target(
+  name = flynet_weights,
+  command = {
+    system2("python", args = c(py_convert_flynet_weights, "-u 256"))
+    here::here("ignore",
+               "models",
+               "MegaFlyNet256.pt")
+    },
+  format = "file"
+)
+
 ## flynet activations ----
+
+target_flynet_activations_raw_ck2017 <- tar_target(
+  name = flynet_activations_raw_ck2017,
+  command = {
+    flynet_weights
+    system2("python",
+            args = c(py_calc_flynet_activations,
+                     "-l 132",
+                     "-p /home/mthieu/Repos/CowenKeltner",
+                     "-v videos_10fps",
+                     "-m metadata",
+                     "-q activations"))
+    "/home/mthieu/Repos/CowenKeltner/metadata/flynet_132x132_stride8_activations.csv"
+    },
+  format = "file"
+)
 
 target_flynet_activations_raw_studyforrest <- tar_map(
   values = tibble(filename = list.files(here::here("ignore",
@@ -67,7 +181,8 @@ target_flynet_activations_raw_studyforrest <- tar_map(
                                   "flynet_activations",
                                   "132x132_stride8",
                                   "studyforrest_retinotopy",
-                                  filename))
+                                  filename),
+             format = "file")
 )
 
 target_flynet_activations_convolved_studyforrest <- tar_combine(
@@ -88,7 +203,8 @@ target_flynet_activations_raw_nsd <- tar_map(
                                   "flynet_activations",
                                   "132x132_stride8",
                                   "nsd_retinotopy",
-                                  filename))
+                                  filename),
+             format = "file")
 )
 
 target_flynet_activations_convolved_nsd <- tar_combine(
@@ -96,6 +212,8 @@ target_flynet_activations_convolved_nsd <- tar_combine(
   target_flynet_activations_raw_nsd,
   command = get_flynet_activation_nsd(vctrs::vec_c(!!!.x))
 )
+
+## ----
 
 ## fmri data input and preproc ----
 
@@ -238,7 +356,20 @@ target_perms_flynet_sc_nsd <- tar_rep(
   retrieval = "worker"
 )
 
-list(target_flynet_activations_raw_studyforrest,
+## the list of all the target metanames ----
+
+list(target_ck2017_ratings,
+     target_ck2017_censored,
+     target_ck2017_kragel2019_train,
+     target_ck2017_kragel2019_test,
+     target_ck2017_kragel2019_classes,
+     target_zhou2022_weights,
+     target_py_flynet_utils,
+     target_py_convert_flynet_weights,
+     target_py_calc_flynet_activations,
+     target_flynet_weights,
+     target_flynet_activations_raw_ck2017,
+     target_flynet_activations_raw_studyforrest,
      target_flynet_activations_convolved_studyforrest,
      target_flynet_activations_raw_nsd,
      target_flynet_activations_convolved_nsd,
