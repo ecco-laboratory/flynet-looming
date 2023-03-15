@@ -8,8 +8,8 @@ import numpy as np
 import pandas as pd
 import torch
 from tqdm import tqdm
-from myutils.video_dtw_utils import read_and_calc_video_flow
-from myutils.flynet_utils import MegaFlyNet, convert_flow_numpy_to_tensor
+from video_dtw_utils import read_and_calc_video_flow
+from flynet_utils import MegaFlyNet, convert_flow_numpy_to_tensor
 
 # %%
 # Paths and shit
@@ -23,10 +23,10 @@ model_path = os.path.join(repo_path, 'ignore', 'models')
 # Argle parser
 parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
 parser.add_argument(
-    '-h',
-    '--height',
+    '-l',
+    '--length',
     type=int,
-    help="Image height in px to resize to (imgs are square, this is width too)"
+    help="Image length/height/width in px to resize to (imgs are square)"
 )
 parser.add_argument(
     '-p',
@@ -48,7 +48,7 @@ parser.add_argument(
 )
 parser.add_argument(
     '-q',
-    '--quantity-to-calc',
+    '--quantity_to_calc',
     type=str,
     choices=['hit_probs', 'activations'],
     help="Which FlyNet quantity to calculate? Hit probs or kernel activations?"
@@ -70,11 +70,11 @@ parser.add_argument(
 )
 args = vars(parser.parse_args())
 
-imgsize = args['height']
+imgsize = args['length']
 stride = args['stride']
 n_units = args['units']
 base_path = args['path']
-quantity_to_calc = args['quantity-to-calc']
+quantity_to_calc = args['quantity_to_calc']
 video_path = os.path.join(base_path, args['videos'])
 metadata_path = os.path.join(base_path, args['metadata'])
 
