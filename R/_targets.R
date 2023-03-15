@@ -45,7 +45,8 @@ plan(batchtools_slurm,
 # UGH the modeling one has to come first so the fucking overloaded packages will load first
 tar_source(c("R/model_retinotopy_fmri.R",
              "R/get_flynet_activation_timecourses.R",
-             "R/get_retinotopy_fmri.R"
+             "R/get_retinotopy_fmri.R",
+             "R/model_flynet_affect.R"
              ))
 
 conflicted::conflict_prefer("filter", "dplyr")
@@ -213,7 +214,12 @@ target_flynet_activations_convolved_nsd <- tar_combine(
   command = get_flynet_activation_nsd(vctrs::vec_c(!!!.x))
 )
 
-## ----
+## beh model fitting ----
+
+target_flynet_activations_fit_ck2017 <- tar_target(
+  name = flynet_activations_fit_ck2017,
+  command = get_flynet_activation_ck2017(flynet_activations_raw_ck2017, ck2017_kragel2019_classes)
+)
 
 ## fmri data input and preproc ----
 
@@ -295,7 +301,7 @@ target_prf_data_v1_studyforrest <- tar_target(
     mutate(tr_num = tr_num + 2L)
 )
 
-## model fitting ----
+## fmri model fitting ----
 
 target_pls_flynet_sc_studyforrest <- tar_target(
   name = pls_flynet_sc_studyforrest,
@@ -369,6 +375,7 @@ list(target_ck2017_ratings,
      target_py_calc_flynet_activations,
      target_flynet_weights,
      target_flynet_activations_raw_ck2017,
+     target_flynet_activations_fit_ck2017,
      target_flynet_activations_raw_studyforrest,
      target_flynet_activations_convolved_studyforrest,
      target_flynet_activations_raw_nsd,
