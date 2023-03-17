@@ -11,13 +11,17 @@ library(tarchetypes)
 library(future)
 library(future.callr)
 library(future.batchtools)
+library(tibble)
 
 # Set target options:
 tar_option_set(
-  packages = c("tidymodels",
+  packages = c("mixOmics",
+               "tidymodels",
                "plsmod",
+               "discrim",
                "tidyverse",
-               "magrittr"), # packages that your targets need to run
+               "magrittr",
+               "crayon"), # packages that your targets need to run
   format = "rds" # default storage format
   # Set other options as needed.
 )
@@ -40,18 +44,17 @@ plan(batchtools_slurm,
                       walltime = 86400L,
                       memory = 2000L,
                       partition = "day-long"))
+# These parameters are relevant later inside the permutation testing targets
+n_batches <- 50
+n_reps_per_batch <- 10
 
 # Run the R scripts in the R/ folder with your custom functions:
-# UGH the modeling one has to come first so the fucking overloaded packages will load first
-tar_source(c("R/model_retinotopy_fmri.R",
-             "R/get_flynet_activation_timecourses.R",
+tar_source(c("R/get_flynet_activation_timecourses.R",
              "R/get_retinotopy_fmri.R",
+             "R/model_retinotopy_fmri.R",
              "R/model_flynet_affect.R"
              ))
 
-conflicted::conflict_prefer("filter", "dplyr")
-conflicted::conflict_prefer("select", "dplyr")
-conflicted::conflict_prefer("map", "purrr")
 # source("other_functions.R") # Source other scripts as needed. # nolint
 
 ## metadata files from other people's stuff ----
@@ -139,6 +142,35 @@ target_py_calc_flynet_activations <- tar_target(
   format = "file"
 )
 
+## emonet dependent stuff ----
+
+# TODO: Fully implement this from the python script
+target_ck2017_kragel2019_preds_framewise <- tar_target(
+  name = ck2017_kragel2019_preds_framewise,
+  command = "/home/mthieu/Repos/CowenKeltner/metadata/test_framewise_preds.csv",
+  format = "file"
+)
+
+target_ck2017_kragel2019_preds_videowise <- tar_target(
+  name = ck2017_kragel2019_preds_videowise,
+  command = read_csv(ck2017_kragel2019_preds_framewise) %>% 
+    select(-guess_1) %>% 
+    group_by(video) %>% 
+    # amazingly, averaging each of the class probs across frames
+    # yields class probs for each video that still add to 1. magical
+    summarize(across(-frame, mean)) %>% 
+    pivot_longer(cols = -video, names_to = "emotion_pred", values_to = "prob") %>% 
+    group_by(video) %>% 
+    filter(prob == max(prob)) %>%
+    ungroup() %>% 
+    select(-prob) %>% 
+    left_join(read_csv(ck2017_kragel2019_test), by = "video") %>% 
+    rename(emotion_obs = emotion) %>% 
+    mutate(emotion_obs = factor(emotion_obs),
+           # Pull the levels from the observed labels ecause empathic pain was never guessed
+           emotion_pred = factor(emotion_pred, levels = levels(emotion_obs)))
+)
+
 ## flynet setup stuff ----
 
 target_flynet_weights <- tar_target(
@@ -218,7 +250,35 @@ target_flynet_activations_convolved_nsd <- tar_combine(
 
 target_flynet_activations_fit_ck2017 <- tar_target(
   name = flynet_activations_fit_ck2017,
-  command = get_flynet_activation_ck2017(flynet_activations_raw_ck2017, ck2017_kragel2019_classes)
+  command = {
+    activations <- get_flynet_activation_ck2017(flynet_activations_raw_ck2017, ck2017_kragel2019_classes)
+    # Use pre-existing Kragel 2019 train-test split to make an rsample-compatible split object
+    make_splits(x = filter(activations, split == "train"),
+                assessment = filter(activations, split == "test"))
+  }
+)
+
+target_ck2017_flynet_preds <- tar_target(
+  name = ck2017_flynet_preds,
+  command = flynet_activations_fit_ck2017 %>% 
+    training() %>% 
+    get_discrim_workflow() %>% 
+    fit(data = training(flynet_activations_fit_ck2017)) %>% 
+    get_discrim_preds_from_trained_model(test_data = testing(flynet_activations_fit_ck2017))
+)
+
+## beh permutation testing ----
+
+target_perms_ck2017_flynet <- tar_rep(
+  name = perms_ck2017_flynet,
+  command = perm_beh_metrics(in_split = flynet_activations_fit_ck2017,
+                     in_workflow = get_discrim_workflow(training(flynet_activations_fit_ck2017)),
+                     times = n_reps_per_batch) %>% 
+    estimate_tune_results(),
+  batches = n_batches,
+  reps = 1,
+  storage = "worker",
+  retrieval = "worker"
 )
 
 ## fmri data input and preproc ----
@@ -333,9 +393,6 @@ target_metrics_flynet_sc_nsd <- tar_target(
 
 ## permute your life ----
 
-n_batches <- 50
-n_reps_per_batch <- 10
-
 target_perms_flynet_sc_studyforrest <- tar_rep(
   name = perms_flynet_sc_studyforrest,
   command = fit_xval(in_x = flynet_activations_convolved_studyforrest,
@@ -373,9 +430,12 @@ list(target_ck2017_ratings,
      target_py_flynet_utils,
      target_py_convert_flynet_weights,
      target_py_calc_flynet_activations,
+     target_ck2017_kragel2019_preds_framewise,
+     target_ck2017_kragel2019_preds_videowise,
      target_flynet_weights,
      target_flynet_activations_raw_ck2017,
      target_flynet_activations_fit_ck2017,
+     target_ck2017_flynet_preds,
      target_flynet_activations_raw_studyforrest,
      target_flynet_activations_convolved_studyforrest,
      target_flynet_activations_raw_nsd,

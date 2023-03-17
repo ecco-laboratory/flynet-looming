@@ -7,11 +7,7 @@ format: html
 #| include: false
 
 require(tidyverse)
-require(tidymodels)
-# Apparently must actively be loaded, not merely installed
-require(discrim)
 require(magrittr)
-require(slider)
 
 mode_char <- function (x) {
   stopifnot(is.character(x))
@@ -21,111 +17,44 @@ mode_char <- function (x) {
   return (x_levels[which(tabulate(x_factor) == max(tabulate(x_factor)))])
 }
 
-censored <- read_csv(here::here("ignore", "outputs", "ck2017_censored_video_ids.csv"))
+ratings <- read_csv(targets::tar_read(ck2017_ratings,
+                                      store = here::here("ignore", targets::tar_config_get("store"))))
 
-radial_flows <- read_csv(here::here("ignore", "outputs", "ck2017_5class_radial_flows.csv"))
+flynet_preds <- targets::tar_read(ck2017_flynet_preds,
+                                  store = here::here("ignore", targets::tar_config_get("store")))
 
-ratings <- read_csv(here::here("ignore", "outputs", "ck2017_video_ratings.csv"))
-
-classes <- read_csv(here::here("ignore", "outputs", "kragel2019_train_video_ids.csv")) %>% 
-  bind_rows(train = .,
-            test = read_csv(here::here("ignore", "outputs", "kragel2019_test_video_ids.csv")),
-            .id = "split") %>% 
-  filter(!(emotion %in% c("Pride", "Satisfaction", "Sympathy", "Anger", "Admiration", "Calmness", "Relief", "Awkwardness", "Triumph", "Nostalgia"))) %>% 
-  mutate(censored = video %in% c(censored$less.bad, censored$very.bad))
-
-hit_probs <- read_csv(here::here("ignore", "outputs", "ck2017_flynet_hit_probs.csv")) %>% 
-  inner_join(classes, by = "video")
-
-rf_activations <- read_csv(here::here("ignore", "outputs", "ck2017_flynet_228x228_stride8_activations.csv")) %>% 
-  inner_join(classes, by = "video")
-
-hidden_activations <- read_csv(here::here("ignore", "outputs", "emonet_gru_5class_bidirectional_hidden_activations.csv"))
-
-emonet_preds <- read_csv(here::here("ignore", "outputs", "emonet_torch_kragel2019_test_framewise_preds.csv")) %>% 
-  select(-guess_1) %>% 
-  group_by(video) %>% 
-  summarize(across(-frame, mean)) %>% 
-  pivot_longer(cols = -video, names_to = "emotion_predicted", values_to = "prob") %>% 
-  group_by(video) %>% 
-  filter(prob == max(prob)) %>%
-  ungroup() %>% 
-  inner_join(classes %>% rename(emotion_observed = emotion), by = "video")
+emonet_preds <- targets::tar_read(ck2017_kragel2019_preds_videowise,
+                                  store = here::here("ignore", targets::tar_config_get("store")))
+  
 ```
 
-```{r}
-#| eval: false
-# Be mindful that this chunk runs a LOT of lms and takes some time
-rf_activation_slopes <- rf_activations %>% 
-  pivot_longer(cols = -c(video, split, frame, emotion, censored),
-               names_to = "rf",
-               values_to = "activation") %>%
-  nest(activations = c(frame, activation)) %>% 
-  mutate(coefs = map(activations,
-                     ~lm(activation ~ scale(frame, scale = FALSE), data = .) %>% 
-                       pluck("coefficients"),
-                     .progress = list(name = "RF activation slopes"))) %>% 
-  select(-activations) %>% 
-  unnest_wider(coefs) %>% 
-  rename(intercept = "(Intercept)", slope = "scale(frame, scale = FALSE)")
-
-rf_activation_slopes %>% 
-  write_csv(here::here("ignore", "outputs", "ck2017_flynet_228x228_stride8_activation_slopes.csv"))
+```{r flynet-acc}
+flynet_preds %>% 
+  # Because empathic pain was never guessed and yardstick requires the factor levels to match
+  accuracy(truth = emotion_pred, estimate = emotion_obs)
 ```
 
-```{r}
-rf_activation_slopes <- read_csv(here::here("ignore", "outputs", "ck2017_flynet_228x228_stride8_activation_slopes.csv")) %>% 
-  select(-intercept) %>% 
-  pivot_wider(id_cols = c(video, emotion, split, censored),
-              names_from = rf,
-              values_from = slope,
-              names_prefix = "slope_rf")
+```{r emonet-acc}
+emonet_preds %>% 
+  # Because empathic pain was never guessed and yardstick requires the factor levels to match
+  accuracy(truth = emotion_pred, estimate = emotion_obs)
 ```
 
-
-```{r}
-rf_activation_slopes_split <- rf_activation_slopes %>% 
-  initial_split(prop = 0.8, strata = emotion)
-rf_activation_slopes_train <- rf_activation_slopes %>% 
-  filter(split == "train")
-rf_activation_slopes_test <- rf_activation_slopes %>% 
-  filter(split == "test")
-
-# remember, data only needs something with the right colnames and types
-lda_recipe <- recipe(emotion ~ ., data = head(rf_activation_slopes)) %>% 
-  update_role(video, censored, new_role = "ID") %>% 
-  step_rm(split)
-
-lda_workflow <- workflow() %>% 
-  # By default, engine = "MASS" so let's just go with that for now
-  add_model(discrim_linear()) %>% 
-  add_recipe(lda_recipe)
-
-lda_result <- lda_workflow %>% 
-  fit(data = rf_activation_slopes_train)
-```
-
-```{r}
-rf_activation_slope_preds <- rf_activation_slopes_test %>% 
-  select(video, emotion_observed = emotion, censored) %>% 
-  mutate(emotion_observed = factor(emotion_observed)) %>% 
-  bind_cols(predict(lda_result, rf_activation_slopes_test)) %>% 
-  rename(emotion_predicted = .pred_class)
-```
 
 ```{r make-hclust}
-rf_activation_slope_hclust <- rf_activation_slope_preds %>% 
-  count(emotion_observed, emotion_predicted) %>% 
-  complete(emotion_observed, emotion_predicted, fill = list(n = 0L)) %>%
-  group_by(emotion_observed) %>% 
-  mutate(prob = n / sum(n)) %>%
-  ungroup() %>% 
+flynet_confusion_preplot <-flynet_preds %>% 
+  count(emotion_obs, emotion_pred) %>% 
+  complete(emotion_obs, emotion_pred, fill = list(n = 0L)) %>% 
+  group_by(emotion_obs) %>% 
+  mutate(prob = n / sum(n)) %>% 
+  ungroup()
+
+flynet_hclust <- flynet_confusion_preplot %>% 
+  # All of this funky-dunkiness is bc we are averaging across pred A obs B errors and pred B obs A errors
   mutate(across(starts_with("emotion"), as.character), 
-         emotions = map2(emotion_observed, emotion_predicted, ~sort(c(.x, .y)))) %>%
-  select(-starts_with("emotion_")) %>% 
-  mutate(emotion1 = map_chr(emotions, pluck, 1), 
-         emotion2 = map_chr(emotions, pluck, 2)) %>% 
-  select(-emotions) %>% 
+         emotions = map2(emotion_obs, emotion_pred,
+                         \(x, y) set_names(sort(c(x, y)), nm = c("emotion1", "emotion2")))) %>%
+  unnest_wider(emotions) %>% 
   group_by(emotion1, emotion2) %>% 
   summarize(prob = mean(prob)) %>% 
   mutate(prob = 1 - prob) %>% 
@@ -135,27 +64,29 @@ rf_activation_slope_hclust <- rf_activation_slope_preds %>%
   as.dist(diag = TRUE) %>% 
   hclust(method = "ward.D")
 
-hclust_order <- tibble(emotion_num = rf_activation_slope_hclust$order) %>% 
+# Do all of this stuff because I don't actually like how ggcorrplot does things.
+# It fucking flips the rows and cols from the matrix to the graph!
+hclust_order <- tibble(emotion_num = flynet_hclust$order) %>% 
   mutate(emotion_order = 1:n()) %>% 
   arrange(emotion_num) %>% 
-  mutate(emotion = rf_activation_slope_hclust$labels) %>% 
+  mutate(emotion = flynet_hclust$labels) %>% 
   select(-emotion_num)
 ```
 
 
 ```{r plot-emonet-confusion-matrix}
 emonet_confusion_preplot <- emonet_preds %>% 
-  count(emotion_observed, emotion_predicted) %>% 
-  complete(emotion_observed, emotion_predicted, fill = list(n = 0L)) %>% 
+  count(emotion_obs, emotion_pred) %>% 
+  complete(emotion_obs, emotion_pred, fill = list(n = 0L)) %>% 
   # No videos were predicted as empathic pain
   # so need to do this shit to patch it back in
-  pivot_wider(id_cols = emotion_observed,
-              names_from = emotion_predicted,
+  pivot_wider(id_cols = emotion_obs,
+              names_from = emotion_pred,
               values_from = n) %>% mutate(`Empathic Pain` = 0L) %>% 
-  pivot_longer(cols = -emotion_observed,
-               names_to = "emotion_predicted",
+  pivot_longer(cols = -emotion_obs,
+               names_to = "emotion_pred",
                values_to = "n") %>% 
-  group_by(emotion_observed) %>% 
+  group_by(emotion_obs) %>% 
   mutate(prob = n / sum(n)) %>% 
   ungroup()
 
@@ -181,7 +112,7 @@ emonet_confusion_preplot %>%
                                                       "Boredom",
                                                       "Disgust",
                                                       "Craving"))) %>% 
-  ggplot(aes(x = emotion_predicted, y = fct_rev(emotion_observed))) + 
+  ggplot(aes(x = emotion_pred, y = fct_rev(emotion_obs))) + 
   geom_raster(aes(fill = prob)) + 
   scale_fill_viridis_c() +
   guides(x = guide_axis(angle = 45)) +
@@ -189,61 +120,57 @@ emonet_confusion_preplot %>%
 ```
 
 ```{r plot-flynet-confusion-matrix}
-rf_activation_slope_confusion_preplot <-rf_activation_slope_preds %>% 
-  count(emotion_observed, emotion_predicted) %>% 
-  complete(emotion_observed, emotion_predicted, fill = list(n = 0L)) %>% 
-  group_by(emotion_observed) %>% 
-  mutate(prob = n / sum(n)) %>% 
-  ungroup()
-
-rf_activation_slope_confusion_preplot %>% 
+flynet_confusion_preplot %>% 
   left_join(hclust_order %>% 
-              rename(order_observed = emotion_order), by = c("emotion_observed" = "emotion")) %>% 
+              rename(order_observed = emotion_order), by = c("emotion_obs" = "emotion")) %>% 
   left_join(hclust_order %>% 
-              rename(order_predicted = emotion_order), by = c("emotion_predicted" = "emotion")) %>% 
-  mutate(emotion_observed = fct_reorder(emotion_observed, order_observed),
-         emotion_predicted = fct_reorder(emotion_predicted, order_predicted)) %>% 
-  ggplot(aes(x = emotion_predicted, y = fct_rev(emotion_observed))) + 
+              rename(order_predicted = emotion_order), by = c("emotion_pred" = "emotion")) %>% 
+  mutate(emotion_obs = fct_reorder(emotion_obs, order_observed),
+         emotion_pred = fct_reorder(emotion_pred, order_predicted)) %>% 
+  ggplot(aes(x = emotion_pred, y = fct_rev(emotion_obs))) + 
   geom_raster(aes(fill = prob)) + 
   scale_fill_viridis_c() +
   guides(x = guide_axis(angle = 45)) +
   labs(title = "FlyNet confusion matrix")
 ```
+
 ```{r make-model-matrices}
 arousal_means <- ratings %>% 
   select(video = Filename, arousal = arousal...37, valence) %>% 
-  inner_join(classes, by = "video") %>% 
-  filter(split == "train") %>% 
+  # Keep only the TRAINING videos
+  # so this has the effect of "fitting" a "model" on the training videos
+  inner_join(read_csv(targets::tar_read(ck2017_kragel2019_train,
+                                      store = here::here("ignore", targets::tar_config_get("store")))), 
+             by = "video") %>% 
   group_by(emotion) %>% 
-  summarize(arousal = mean(arousal),
-            valence = mean(valence))
+  summarize(across(c(arousal, valence), mean))
 
-confusion_premodel <- rf_activation_slope_confusion_preplot %>% 
+confusion_premodel <- flynet_confusion_preplot %>% 
   select(-n) %>% 
   rename(prob_flynet = prob) %>% 
   full_join(emonet_confusion_preplot %>% 
               select(-n) %>% 
               rename(prob_emonet = prob),
-            by = c("emotion_observed", "emotion_predicted")) %>% 
+            by = c("emotion_obs", "emotion_pred")) %>% 
   mutate(dist_flynet = 1 - prob_flynet,
          dist_emonet = 1 - prob_emonet,
          fear_only = case_when(
-           emotion_observed == "Fear" & emotion_predicted == "Fear" ~ 0L,
-           emotion_observed != "Fear" & emotion_predicted != "Fear" ~ 0L,
+           emotion_obs == "Fear" & emotion_pred == "Fear" ~ 0L,
+           emotion_obs != "Fear" & emotion_pred != "Fear" ~ 0L,
            TRUE ~ 1L
          ),
          active_avoidance = case_when(
-           emotion_observed %in% c("Fear", "Horror", "Disgust") & emotion_predicted %in% c("Fear", "Horror", "Disgust") ~ 0L,
-           !(emotion_observed %in% c("Fear", "Horror", "Disgust")) & !(emotion_predicted %in% c("Fear", "Horror", "Disgust")) ~ 0L,
+           emotion_obs %in% c("Fear", "Horror", "Disgust") & emotion_pred %in% c("Fear", "Horror", "Disgust") ~ 0L,
+           !(emotion_obs %in% c("Fear", "Horror", "Disgust")) & !(emotion_pred %in% c("Fear", "Horror", "Disgust")) ~ 0L,
            TRUE ~ 1L
          )
   ) %>% 
-  left_join(arousal_means %>% rename_with(~paste0(., "_observed"),
+  left_join(arousal_means %>% rename_with(\(x) paste0(x, "_observed"),
                                           .cols = -emotion),
-            by = c("emotion_observed" = "emotion")) %>% 
-  left_join(arousal_means %>% rename_with(~paste0(., "_predicted"),
+            by = c("emotion_obs" = "emotion")) %>% 
+  left_join(arousal_means %>% rename_with(\(x) paste0(x, "_predicted"),
                                           .cols = -emotion),
-            by = c("emotion_predicted" = "emotion")) %>% 
+            by = c("emotion_pred" = "emotion")) %>% 
   mutate(arousal_diff = abs(arousal_observed - arousal_predicted),
          valence_diff = abs(valence_observed - valence_predicted))
 ```
@@ -253,6 +180,7 @@ confusion_premodel %>%
   lm(dist_flynet ~ fear_only, data = .) %>% 
   summary()
 ```
+
 ```{r}
 confusion_premodel %>% 
   lm(dist_flynet ~ active_avoidance, data = .) %>% 
@@ -269,33 +197,4 @@ confusion_premodel %>%
 confusion_premodel %>% 
   lm(dist_flynet ~ valence_diff + arousal_diff, data = .) %>% 
   summary()
-```
-
-```{r}
-hit_probs %<>% 
-  group_by(video) %>% 
-  mutate(hit_prob_slide3 = slide_dbl(hit_prob,
-                                     mean,
-                                     .before=1,
-                                     .after=1),
-         hit_prob_slide5 = slide_dbl(hit_prob,
-                                     mean,
-                                     .before=2,
-                                     .after=2)) %>% 
-  ungroup()
-
-```
-
-```{r}
-hit_probs %>% 
-  ggplot(aes(x = frame, y = hit_prob_slide5)) +
-  geom_line(aes(group = video), alpha = 0.3) +
-  facet_wrap(~ emotion)
-```
-
-```{r}
-hit_probs %>% 
-  ggplot(aes(x = frame, y = hit_prob)) +
-  geom_smooth(aes(group = video), method = "lm", formula = "y ~ x", se = FALSE, size = 0.1) +
-  facet_wrap(~ emotion)
 ```
