@@ -1,14 +1,8 @@
 ## setup ----
 
-require(mixOmics)
-require(tidymodels)
-# should have been loaded with tidymodels but these functions are turning up missing?
-require(recipes)
-require(plsmod)
-# load tidyverse after all that stuff because there are functions in the above packages that mask select() and map()
-require(tidyverse)
-require(magrittr)
-require(crayon)
+# This is a targets-compatible function definition script
+# Which means it should only be called under the hood by tar_make()
+# and all the packages are loaded ELSEWHERE! Not in the body of this script.
 
 ## permutation by time ----
 

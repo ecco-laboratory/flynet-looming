@@ -1,7 +1,8 @@
 ## setup ----
 
-require(tidyverse)
-require(magrittr)
+# This is a targets-compatible function definition script
+# Which means it should only be called under the hood by tar_make()
+# and all the packages are loaded ELSEWHERE! Not in the body of this script.
 
 # using the parameters to reproduce the SPM default HRF
 # SPM uses a 32-s kernel, mind thee

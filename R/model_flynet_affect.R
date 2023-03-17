@@ -1,10 +1,8 @@
 ## setup ----
 
-require(tidymodels)
-# Apparently must actively be loaded, not merely installed
-require(discrim)
-require(tidyverse)
-require(magrittr)
+# This is a targets-compatible function definition script
+# Which means it should only be called under the hood by tar_make()
+# and all the packages are loaded ELSEWHERE! Not in the body of this script.
 
 mode_char <- function (x) {
   stopifnot(is.character(x))
@@ -61,41 +59,47 @@ get_discrim_workflow <- function (in_data, discrim_engine = discrim_linear()) {
 # what do we want? predictions!
 # when do we want them? now!
 # But don't use this for model performance bc we have tidymodels xval for that (below)
-get_discrim_preds <- function (in_data, in_workflow) {
+get_discrim_preds_from_trained_model <- function (in_workflow_fit, test_data) {
   
-  train_data <- in_data %>% 
-    filter(split == "train")
-  
-  pred <- in_workflow %>% 
-    fit(data = train_data) %>% 
-    # "predict" on the FULL data
-    predict(new_data = in_data) %>% 
-    # bind onto the original data to recover the observation identifying columns etc
-    bind_cols(in_data, .) %>% 
+  out <- in_workflow_fit %>% 
+    # "predict" on the HELD OUT data
+    predict(new_data = test_data) %>% 
+    # bind back onto the original df to recover the observation identifying columns etc
+    # apparently this is how they do it in the tidymodels docs too, so there isn't a better way
+    # so... dumb
+    bind_cols(test_data, .) %>% 
     rename(emotion_obs = emotion, emotion_pred = .pred_class) %>% 
     mutate(emotion_obs = factor(emotion_obs)) %>% 
-    # but only keep the held-out videos from the y
-    filter(split == "test") %>% 
     # Fuck the Xs! Just gimme the Ys
     select(video, censored, starts_with("emotion"))
-  
-  return (pred)
-}
-
-# this is basically only useful for model PERFORMANCE
-# which in our case is only one of the metrics of interest
-get_beh_xval_metrics <- function (in_data, in_workflow, n_folds = NULL, permute_params = NULL) {
-  splits <- vfold_cv(in_data, v = n_folds, strata = emotion)
-  
-  # TODO: Actually use tidymodels rsample permutation implementation
-  # use permutations() to generate df of permutation samples
-  # map() each permutation to get a collected xval metrics within it
-  # that summary of metrics will be the permutation distribution
-  # Super sexy profit
-  out <- in_workflow %>% 
-    fit_resamples(splits) %>% 
-    collect_metrics()
   
   return (out)
 }
 
+## permutation testing but tidy this time ----
+
+# this is basically only useful for model PERFORMANCE
+# which in our case is only one of the metrics of interest
+# Phil says we don't need to cross-validate model performance because we have enough videos
+# that the estimate from a single train-test split should be fairly stable/low SE
+# Note that times sets the number of permutation iterations to be run in a single batch
+# and there is no paralleling inside of this function
+perm_beh_metrics <- function (in_split, in_workflow, times) {
+  
+  out <- in_split %>% 
+    # Only permute emotion classes for the training data
+    # ne touche pas les testing data. that's for prediction only!
+    training() %>% 
+    permutations(permute = emotion, times = times) %>% 
+    # needs to be named using tidymodels tune convention to use tune metrics collecting later
+    mutate(.metrics = map(splits, 
+                        \(x) x %>% 
+                          analysis() %>% 
+                          fit(in_workflow, data = .) %>% 
+                          # testing on the same held-out, NOT PERMUTED, testing data every time
+                          get_discrim_preds_from_trained_model(test_data = testing(in_split)) %>% 
+                          accuracy(truth = emotion_obs, estimate = emotion_pred),
+                          .progress = "permutation! no breathing!"))
+  
+  return (out)
+}
