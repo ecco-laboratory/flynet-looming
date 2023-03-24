@@ -6,8 +6,8 @@ import platform
 import numpy as np
 import pandas as pd
 import torch
-from emonet_utils import Cowen2017FrameDataset, EmoNet
-from nsd_utils import NSDDataset
+from myutils.emonet_utils import Cowen2017FrameDataset, EmoNetPythonic
+from myutils.nsd_utils import NSDDataset
 from torch import nn
 from torchvision import transforms
 from tqdm import tqdm, trange
@@ -21,7 +21,7 @@ else:
     base_path = os.path.join(os.sep, base_path)
 
 
-emonet_path = '../ignore/models/EmoNet.pt'
+emonet_path = '../ignore/models/EmoNetPythonic.pt'
 
 local_ck_path = '/home/mthieu/Repos/CowenKeltner'
 nsd_path = os.path.join(base_path, 'Code', 'NSD')
@@ -43,7 +43,7 @@ def cache_layer_activation(name):
 
 # %%
 # Load that puppy in
-emonet_torch = EmoNet()
+emonet_torch = EmoNetPythonic()
 emonet_torch.load_state_dict(state_dict=torch.load(emonet_path))
 
 # Decorate a call with @torch.no_grad() to Turn OFF gradient tracking because we don't need to train new weights
@@ -58,6 +58,7 @@ for name, mod in emonet_torch.named_modules():
     if name.startswith('Conv'):
         mod.register_forward_hook(cache_layer_activation(name))
 
+emonet_torch.eval()
 # %%
 # Initialize Dataset objs for ze NSD image data
 # Use the NSD images, not the original COCO images/API, even though they're in torchvision
@@ -80,13 +81,13 @@ batch_size = 10
 nsd_torchloader = torch.utils.data.DataLoader(nsd_torchdata, batch_size=batch_size)
 # %%
 # Initialize Dataset objs for Cowen & Keltner FRAMES
-these_classes = ['Anxiety', 'Excitement', 'Fear', 'Horror', 'Surprise']
+# these_classes = ['Anxiety', 'Excitement', 'Fear', 'Horror', 'Surprise']
 
 ck_train = Cowen2017FrameDataset(
     root=video_path,
     annPath=metadata_path,
     censor=False,
-    classes=these_classes,
+    # classes=these_classes,
     train=True,
     device='cpu',
     transform=transforms.Resize((227, 227))
@@ -96,7 +97,7 @@ ck_test = Cowen2017FrameDataset(
     root=video_path,
     annPath=metadata_path,
     censor=False,
-    classes=these_classes,
+    # classes=these_classes,
     train=False,
     device='cpu',
     transform=transforms.Resize((227, 227))
@@ -111,23 +112,23 @@ ck_test_torchloader = torch.utils.data.DataLoader(
     ck_test,
     batch_size=batch_size
 )
+
 # %%
-# DO IT?! RUN IT! GET PREDS
-emonet_torch.eval()
+# DO IT?! RUN IT! GET (FRAMEWISE) PREDS
 
 # Yeah I think we should set this to empty dict again just in case
 # It needs to be initalized earlier for that function to work I think
 # but for safety, re-set it to empty before every pass of the model
 # TODO: Write this to preallocate so we can copy into Tensor slice and go more pythonically
 activations_all = {
-    'Conv_0': [],
-    'Conv_1': [],
-    'Conv_2': [],
-    'Conv_3': [],
-    'Conv_4': [],
-    'Conv_5': [],
-    'Conv_6': [],
-    'Conv_7': [],
+    'conv_0': [],
+    'conv_1': [],
+    'conv_2': [],
+    'conv_3': [],
+    'conv_4': [],
+    'conv_5': [],
+    'conv_6': [],
+    'conv_7': [],
     }
 activations = {}
 preds_all = []
