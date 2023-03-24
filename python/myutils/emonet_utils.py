@@ -324,7 +324,7 @@ class EmoNetHeadlessVideo(nn.Module):
         # because feeding in the data attribute of a PackedSequence
         # already lines up with the metadata needed to put the predictions back into sequences
         # using built-in PyTorch utilities
-        # x = x.to(device=self.device, dtype=torch.float)
+        x = x.to(torch.float)
         x = self.conv_0(x)
         x = self.conv_1(x)
         x = self.conv_2(x)
