@@ -155,22 +155,30 @@ target_ck2017_kragel2019_preds_framewise <- tar_target(
 
 target_ck2017_kragel2019_preds_videowise <- tar_target(
   name = ck2017_kragel2019_preds_videowise,
-  command = read_csv(ck2017_kragel2019_preds_framewise) %>% 
-    select(-guess_1) %>% 
-    group_by(video) %>% 
-    # amazingly, averaging each of the class probs across frames
-    # yields class probs for each video that still add to 1. magical
-    summarize(across(-frame, mean)) %>% 
-    pivot_longer(cols = -video, names_to = "emotion_pred", values_to = "prob") %>% 
-    group_by(video) %>% 
-    filter(prob == max(prob)) %>%
-    ungroup() %>% 
-    select(-prob) %>% 
-    left_join(read_csv(ck2017_kragel2019_test), by = "video") %>% 
-    rename(emotion_obs = emotion) %>% 
-    mutate(emotion_obs = factor(emotion_obs),
-           # Pull the levels from the observed labels ecause empathic pain was never guessed
-           emotion_pred = factor(emotion_pred, levels = levels(emotion_obs)))
+  command = {
+    out <- read_csv(ck2017_kragel2019_preds_framewise) %>% 
+      select(-guess_1) %>% 
+      group_by(video) %>% 
+      # amazingly, averaging each of the class probs across frames
+      # yields class probs for each video that still add to 1. magical
+      summarize(across(-frame, mean))
+    
+    emotion_classes <- out %>% 
+      select(-video) %>% 
+      colnames()
+    
+    out %>%
+      rename_with(\(x) paste0(".pred_", x), .cols = -video) %>% 
+      rowwise() %>% 
+      # Do it rowwise to keep the class probs in their own cols while getting the max prob col
+      mutate(emotion_pred = emotion_classes[c_across(starts_with(".pred")) == max(c_across(starts_with(".pred")))]) %>% 
+      ungroup() %>% 
+      left_join(read_csv(ck2017_kragel2019_test), by = "video") %>% 
+      rename(emotion_obs = emotion) %>% 
+      mutate(emotion_obs = factor(emotion_obs),
+             # Pull the levels from the observed labels ecause empathic pain was never guessed
+             emotion_pred = factor(emotion_pred, levels = levels(emotion_obs)))
+  }
 )
 
 target_ck2017_kragel2019_activations_fc7 <- tar_target(
@@ -268,11 +276,17 @@ target_flynet_activations_fit_ck2017 <- tar_target(
 
 target_ck2017_flynet_preds <- tar_target(
   name = ck2017_flynet_preds,
-  command = flynet_activations_fit_ck2017 %>% 
-    training() %>% 
-    get_discrim_workflow() %>% 
-    fit(data = training(flynet_activations_fit_ck2017)) %>% 
-    get_discrim_preds_from_trained_model(test_data = testing(flynet_activations_fit_ck2017))
+  command = {
+    discrim_recipe <- flynet_activations_fit_ck2017 %>% 
+      training() %>% 
+      get_discrim_recipe()
+    
+    discrim_recipe %>% 
+      get_discrim_workflow() %>% 
+      fit(data = training(flynet_activations_fit_ck2017)) %>% 
+      get_discrim_preds_from_trained_model(in_recipe = discrim_recipe,
+                                           test_data = testing(flynet_activations_fit_ck2017))
+    }
 )
 
 target_ck2017_kragel2019_fc7_rsplit <- tar_target(
@@ -291,11 +305,17 @@ target_ck2017_kragel2019_fc7_rsplit <- tar_target(
 
 target_ck2017_kragel2019_fc7_preds <- tar_target(
   name = ck2017_kragel2019_fc7_preds,
-  command = ck2017_kragel2019_fc7_rsplit %>% 
-    training() %>% 
-    get_discrim_workflow() %>% 
-    fit(data = training(ck2017_kragel2019_fc7_rsplit)) %>% 
-    get_discrim_preds_from_trained_model(test_data = testing(ck2017_kragel2019_fc7_rsplit))
+  command = {
+    discrim_recipe <- ck2017_kragel2019_fc7_rsplit %>% 
+      training() %>% 
+      get_discrim_recipe()
+    
+    discrim_recipe %>% 
+      get_discrim_workflow() %>% 
+      fit(data = training(ck2017_kragel2019_fc7_rsplit)) %>% 
+      get_discrim_preds_from_trained_model(in_recipe = discrim_recipe,
+                                           test_data = testing(ck2017_kragel2019_fc7_rsplit))
+    }
 )
 
 ## beh permutation testing ----
