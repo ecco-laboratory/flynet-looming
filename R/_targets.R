@@ -41,12 +41,14 @@ plan(batchtools_slurm,
      resources = list(ntasks = 1L,
                       ncpus = n_slurm_cpus,
                       nodelist = "node1",
-                      walltime = 86400L,
-                      memory = 2000L,
-                      partition = "day-long"))
+                      # walltime 86400 for 24h (partition day-long)
+                      # walltime 1800 for 30min (partition short)
+                      walltime = 1800L,
+                      memory = 500L,
+                      partition = "short"))
 # These parameters are relevant later inside the permutation testing targets
 n_batches <- 50
-n_reps_per_batch <- 10
+n_reps_per_batch <- 200
 
 # Run the R scripts in the R/ folder with your custom functions:
 tar_source(c("R/get_flynet_activation_timecourses.R",
@@ -171,6 +173,12 @@ target_ck2017_kragel2019_preds_videowise <- tar_target(
            emotion_pred = factor(emotion_pred, levels = levels(emotion_obs)))
 )
 
+target_ck2017_kragel2019_activations_fc7 <- tar_target(
+  name = ck2017_kragel2019_activations_fc7,
+  command = "/home/mthieu/Repos/CowenKeltner/metadata/kragel2019_videowise_activations_fc7.csv",
+  format = "file"
+)
+
 ## flynet setup stuff ----
 
 target_flynet_weights <- tar_target(
@@ -267,18 +275,60 @@ target_ck2017_flynet_preds <- tar_target(
     get_discrim_preds_from_trained_model(test_data = testing(flynet_activations_fit_ck2017))
 )
 
+target_ck2017_kragel2019_fc7_rsplit <- tar_target(
+  name = ck2017_kragel2019_fc7_rsplit,
+  command = {
+    activations <- read_csv(ck2017_kragel2019_activations_fc7) %>% 
+      # selects 256 RANDOM units to get a model with the same sparsity as FlyNet
+      select(video, !!sample(2:4097, size = 256)) %>% 
+      rename_with(\(x) paste0("unit_", x),.cols = -video) %>% 
+      inner_join(ck2017_kragel2019_classes, by = "video")
+    # Use pre-existing Kragel 2019 train-test split to make an rsample-compatible split object
+    make_splits(x = filter(activations, split == "train"),
+                assessment = filter(activations, split == "test"))
+  }
+)
+
+target_ck2017_kragel2019_fc7_preds <- tar_target(
+  name = ck2017_kragel2019_fc7_preds,
+  command = ck2017_kragel2019_fc7_rsplit %>% 
+    training() %>% 
+    get_discrim_workflow() %>% 
+    fit(data = training(ck2017_kragel2019_fc7_rsplit)) %>% 
+    get_discrim_preds_from_trained_model(test_data = testing(ck2017_kragel2019_fc7_rsplit))
+)
+
 ## beh permutation testing ----
 
-target_perms_ck2017_flynet <- tar_rep(
+# Note that these are no longer paralleled using tar_rep
+# as perm_beh_metrics() now takes finished predictions and only permutes the true outcomes
+# leaving the predictions (and effectively the training model) the same every time
+# speeding up the operation mightily as models don't need to be refit
+target_perms_ck2017_flynet <- tar_target(
   name = perms_ck2017_flynet,
-  command = perm_beh_metrics(in_split = flynet_activations_fit_ck2017,
-                     in_workflow = get_discrim_workflow(training(flynet_activations_fit_ck2017)),
-                     times = n_reps_per_batch) %>% 
-    estimate_tune_results(),
-  batches = n_batches,
-  reps = 1,
-  storage = "worker",
-  retrieval = "worker"
+  command = perm_beh_metrics(in_preds = ck2017_flynet_preds,
+                     truth_col = emotion_obs,
+                     estimate_col = emotion_pred,
+                     times = n_batches * n_reps_per_batch) %>% 
+    select(-splits)
+)
+
+target_perms_ck2017_kragel2019 <- tar_target(
+  name = perms_ck2017_kragel2019,
+  command = perm_beh_metrics(in_preds = ck2017_kragel2019_preds_videowise,
+                             truth_col = emotion_obs,
+                             estimate_col = emotion_pred,
+                             times = n_batches * n_reps_per_batch) %>% 
+    select(-splits)
+)
+
+target_perms_ck2017_kragel2019_fc7 <- tar_target(
+  name = perms_ck2017_kragel2019_fc7,
+  command = perm_beh_metrics(in_preds = ck2017_kragel2019_fc7_preds,
+                             truth_col = emotion_obs,
+                             estimate_col = emotion_pred,
+                             times = n_batches * n_reps_per_batch) %>% 
+    select(-splits)
 )
 
 ## fmri data input and preproc ----
@@ -432,10 +482,16 @@ list(target_ck2017_ratings,
      target_py_calc_flynet_activations,
      target_ck2017_kragel2019_preds_framewise,
      target_ck2017_kragel2019_preds_videowise,
+     target_perms_ck2017_kragel2019,
+     target_ck2017_kragel2019_activations_fc7,
+     target_ck2017_kragel2019_fc7_rsplit,
+     target_ck2017_kragel2019_fc7_preds,
+     target_perms_ck2017_kragel2019_fc7,
      target_flynet_weights,
      target_flynet_activations_raw_ck2017,
      target_flynet_activations_fit_ck2017,
      target_ck2017_flynet_preds,
+     target_perms_ck2017_flynet,
      target_flynet_activations_raw_studyforrest,
      target_flynet_activations_convolved_studyforrest,
      target_flynet_activations_raw_nsd,
