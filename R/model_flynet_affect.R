@@ -95,6 +95,107 @@ get_discrim_preds_from_trained_model <- function (in_workflow_fit, in_recipe, te
   return (out)
 }
 
+## making confusion matrices from model preds ----
+
+make_full_confusions <- function (preds_flynet, preds_emonet, path_ratings, path_ids_train) {
+  # As silly as this is, I think this would only get called in here,
+  # so I don't see huge utility in externalizing this bit
+  confusions_flynet <- preds_flynet %>% 
+    count(emotion_obs, emotion_pred) %>% 
+    complete(emotion_obs, emotion_pred, fill = list(n = 0L)) %>% 
+    group_by(emotion_obs) %>% 
+    mutate(prob = n / sum(n)) %>% 
+    ungroup()
+  
+   # Especially bc it's not exactly the same for EmoNet
+  confusions_emonet <- preds_emonet %>% 
+    count(emotion_obs, emotion_pred) %>% 
+    complete(emotion_obs, emotion_pred, fill = list(n = 0L)) %>% 
+    # No videos were predicted as empathic pain
+    # so need to do this shit to patch it back in
+    pivot_wider(id_cols = emotion_obs,
+                names_from = emotion_pred,
+                values_from = n) %>% mutate(`Empathic Pain` = 0L) %>% 
+    pivot_longer(cols = -emotion_obs,
+                 names_to = "emotion_pred",
+                 values_to = "n") %>% 
+    group_by(emotion_obs) %>% 
+    mutate(prob = n / sum(n)) %>% 
+    ungroup()
+  
+  rating_means <- read_csv(path_ratings) %>% 
+    select(video = Filename, arousal = arousal...37, valence) %>% 
+    # Keep only the TRAINING videos
+    # so this has the effect of "fitting" a "model" on the training videos
+    inner_join(read_csv(path_ids_train), 
+               by = "video") %>% 
+    group_by(emotion) %>% 
+    summarize(across(c(arousal, valence), mean))
+  
+  # TODO: For permutation testing these statistics, 
+  # each perm iteration should have a confusion matrix calculated from a set 
+  # with the testing observed labels permuted. 
+  # The same type of permutation being done to estimate class accuracy
+  
+  out <- confusions_flynet %>% 
+    select(-n) %>% 
+    rename(prob_flynet = prob) %>% 
+    full_join(confusions_emonet %>% 
+                select(-n) %>% 
+                rename(prob_emonet = prob),
+              by = c("emotion_obs", "emotion_pred")) %>% 
+    mutate(dist_flynet = 1 - prob_flynet,
+           dist_emonet = 1 - prob_emonet,
+           fear_only = case_when(
+             emotion_obs == "Fear" & emotion_pred == "Fear" ~ 0L,
+             emotion_obs != "Fear" & emotion_pred != "Fear" ~ 0L,
+             TRUE ~ 1L
+           ),
+           active_avoidance = case_when(
+             emotion_obs %in% c("Fear", "Horror", "Disgust") & emotion_pred %in% c("Fear", "Horror", "Disgust") ~ 0L,
+             !(emotion_obs %in% c("Fear", "Horror", "Disgust")) & !(emotion_pred %in% c("Fear", "Horror", "Disgust")) ~ 0L,
+             TRUE ~ 1L
+           )
+    ) %>% 
+    # eh yeah paste it on twice for the observed and the predicted...
+    # not glam but I can't think of a more glam option
+    left_join(rating_means %>% rename_with(\(x) paste0(x, "_observed"),
+                                           .cols = -emotion),
+              by = c("emotion_obs" = "emotion")) %>% 
+    left_join(rating_means %>% rename_with(\(x) paste0(x, "_predicted"),
+                                           .cols = -emotion),
+              by = c("emotion_pred" = "emotion")) %>% 
+    mutate(diff_arousal = abs(arousal_observed - arousal_predicted),
+           diff_valence = abs(valence_observed - valence_predicted)) %>% 
+    # keep only the diff cols
+    select(-ends_with("observed"), -ends_with("predicted"))
+  
+  return (out)
+}
+
+# This is only for plotting symmetrized distances at the moment
+# It keeps both triangles of the matrix otherwise the triangleyness depends on the ordering of levels
+# which very much is not handled by this
+symmetrize_distances <- function (distances, row_col, col_col, y_col) {
+  row_col <- enquo(row_col)
+  col_col <- enquo(col_col)
+  y_col <- enquo(y_col)
+  
+  out <- distances %>% 
+    # First, break the row-column association in preparation for averaging across triangles of the matrix
+    mutate(across(c(!!row_col, !!col_col), as.character), 
+           cols = map2(!!row_col, !!col_col,
+                       \(x, y) set_names(sort(c(x, y)), nm = c("id1", "id2")))) %>%
+    unnest_wider(cols) %>% 
+    # This stuff actually does the averaging across
+    group_by(id1, id2) %>% 
+    mutate(!!y_col := mean(!!y_col)) %>% 
+    ungroup() %>% 
+    select(-id1, -id2)
+  
+  return (out)
+}
+
 ## permutation testing but tidy this time ----
 
 # this is basically only useful for model PERFORMANCE
