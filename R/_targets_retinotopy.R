@@ -43,9 +43,9 @@ plan(batchtools_slurm,
                       nodelist = "node1",
                       # walltime 86400 for 24h (partition day-long)
                       # walltime 1800 for 30min (partition short)
-                      walltime = 1800L,
+                      walltime = 86400L,
                       memory = 500L,
-                      partition = "short"))
+                      partition = "day-long"))
 # These parameters are relevant later inside the permutation testing targets
 n_batches <- 50
 n_reps_per_batch <- 200
@@ -53,139 +53,12 @@ n_reps_per_batch <- 200
 # Run the R scripts in the R/ folder with your custom functions:
 tar_source(c("R/get_flynet_activation_timecourses.R",
              "R/get_retinotopy_fmri.R",
-             "R/model_retinotopy_fmri.R",
-             "R/model_flynet_affect.R"
+             "R/model_retinotopy_fmri.R"
              ))
 
 # source("other_functions.R") # Source other scripts as needed. # nolint
 
-## metadata files from other people's stuff ----
-
-target_ck2017_ratings <- tar_target(
-  name = ck2017_ratings,
-  command = "/home/mthieu/Repos/CowenKeltner/metadata/video_ratings.csv",
-  format = "file"
-)
-
-target_ck2017_censored <- tar_target(
-  name = ck2017_censored,
-  command = "/home/mthieu/Repos/CowenKeltner/metadata/censored_video_ids.csv",
-  format = "file"
-)
-
-target_ck2017_kragel2019_train <- tar_target(
-  name = ck2017_kragel2019_train,
-  command = "/home/mthieu/Repos/CowenKeltner/metadata/train_video_ids.csv",
-  format = "file"
-)
-
-target_ck2017_kragel2019_test <- tar_target(
-  name = ck2017_kragel2019_test,
-  command = "/home/mthieu/Repos/CowenKeltner/metadata/test_video_ids.csv",
-  format = "file"
-)
-
-target_ck2017_kragel2019_classes <- tar_target(
-  name = ck2017_kragel2019_classes,
-  command = {
-    censored <- read_csv(ck2017_censored)
-    bind_rows(train = read_csv(ck2017_kragel2019_train),
-              test = read_csv(ck2017_kragel2019_test),
-              .id = "split") %>% 
-      filter(!(emotion %in% c("Pride",
-                              "Satisfaction",
-                              "Sympathy",
-                              "Anger",
-                              "Admiration",
-                              "Calmness",
-                              "Relief",
-                              "Awkwardness",
-                              "Triumph",
-                              "Nostalgia"))) %>% 
-      mutate(censored = video %in% c(censored$less.bad, censored$very.bad))
-    }
-)
-
-target_zhou2022_weights <- tar_map(
-  values = tibble(filename = list.files(here::here("ignore",
-                                                   "models",
-                                                   "zhou2022"))),
-  tar_target(name = zhou2022_weights,
-             command = here::here("ignore",
-                                  "models",
-                                  "zhou2022",
-                                  filename),
-             format = "file")
-)
-
 ## python scripts ----
-
-target_py_flynet_utils <- tar_target(
-  name = py_flynet_utils,
-  command = here::here("python",
-                       "myutils",
-                       "flynet_utils.py"),
-  format = "file"
-)
-
-target_py_convert_flynet_weights <- tar_target(
-  name = py_convert_flynet_weights,
-  command = here::here("python",
-                       "myutils",
-                       "convert_flynet_weights.py"),
-  format = "file"
-)
-
-target_py_calc_flynet_activations <- tar_target(
-  name = py_calc_flynet_activations,
-  command = here::here("python",
-                       "myutils",
-                       "calc_flynet_activations.py"),
-  format = "file"
-)
-
-## emonet dependent stuff ----
-
-# TODO: Fully implement this from the python script
-target_ck2017_kragel2019_preds_framewise <- tar_target(
-  name = ck2017_kragel2019_preds_framewise,
-  command = "/home/mthieu/Repos/CowenKeltner/metadata/test_framewise_preds.csv",
-  format = "file"
-)
-
-target_ck2017_kragel2019_preds_videowise <- tar_target(
-  name = ck2017_kragel2019_preds_videowise,
-  command = {
-    out <- read_csv(ck2017_kragel2019_preds_framewise) %>% 
-      select(-guess_1) %>% 
-      group_by(video) %>% 
-      # amazingly, averaging each of the class probs across frames
-      # yields class probs for each video that still add to 1. magical
-      summarize(across(-frame, mean))
-    
-    emotion_classes <- out %>% 
-      select(-video) %>% 
-      colnames()
-    
-    out %>%
-      rename_with(\(x) paste0(".pred_", x), .cols = -video) %>% 
-      rowwise() %>% 
-      # Do it rowwise to keep the class probs in their own cols while getting the max prob col
-      mutate(emotion_pred = emotion_classes[c_across(starts_with(".pred")) == max(c_across(starts_with(".pred")))]) %>% 
-      ungroup() %>% 
-      left_join(read_csv(ck2017_kragel2019_test), by = "video") %>% 
-      rename(emotion_obs = emotion) %>% 
-      mutate(emotion_obs = factor(emotion_obs),
-             # Pull the levels from the observed labels ecause empathic pain was never guessed
-             emotion_pred = factor(emotion_pred, levels = levels(emotion_obs)))
-  }
-)
-
-target_ck2017_kragel2019_activations_fc7 <- tar_target(
-  name = ck2017_kragel2019_activations_fc7,
-  command = "/home/mthieu/Repos/CowenKeltner/metadata/kragel2019_videowise_activations_fc7.csv",
-  format = "file"
-)
 
 ## flynet setup stuff ----
 
@@ -201,22 +74,6 @@ target_flynet_weights <- tar_target(
 )
 
 ## flynet activations ----
-
-target_flynet_activations_raw_ck2017 <- tar_target(
-  name = flynet_activations_raw_ck2017,
-  command = {
-    flynet_weights
-    system2("python",
-            args = c(py_calc_flynet_activations,
-                     "-l 132",
-                     "-p /home/mthieu/Repos/CowenKeltner",
-                     "-v videos_10fps",
-                     "-m metadata",
-                     "-q activations"))
-    "/home/mthieu/Repos/CowenKeltner/metadata/flynet_132x132_stride8_activations.csv"
-    },
-  format = "file"
-)
 
 target_flynet_activations_raw_studyforrest <- tar_map(
   values = tibble(filename = list.files(here::here("ignore",
@@ -260,95 +117,6 @@ target_flynet_activations_convolved_nsd <- tar_combine(
   name = flynet_activations_convolved_nsd,
   target_flynet_activations_raw_nsd,
   command = get_flynet_activation_nsd(vctrs::vec_c(!!!.x))
-)
-
-## beh model fitting ----
-
-target_flynet_activations_fit_ck2017 <- tar_target(
-  name = flynet_activations_fit_ck2017,
-  command = {
-    activations <- get_flynet_activation_ck2017(flynet_activations_raw_ck2017, ck2017_kragel2019_classes)
-    # Use pre-existing Kragel 2019 train-test split to make an rsample-compatible split object
-    make_splits(x = filter(activations, split == "train"),
-                assessment = filter(activations, split == "test"))
-  }
-)
-
-target_ck2017_flynet_preds <- tar_target(
-  name = ck2017_flynet_preds,
-  command = {
-    discrim_recipe <- flynet_activations_fit_ck2017 %>% 
-      training() %>% 
-      get_discrim_recipe()
-    
-    discrim_recipe %>% 
-      get_discrim_workflow() %>% 
-      fit(data = training(flynet_activations_fit_ck2017)) %>% 
-      get_discrim_preds_from_trained_model(in_recipe = discrim_recipe,
-                                           test_data = testing(flynet_activations_fit_ck2017))
-    }
-)
-
-target_ck2017_kragel2019_fc7_rsplit <- tar_target(
-  name = ck2017_kragel2019_fc7_rsplit,
-  command = {
-    activations <- read_csv(ck2017_kragel2019_activations_fc7) %>% 
-      # selects 256 RANDOM units to get a model with the same sparsity as FlyNet
-      select(video, !!sample(2:4097, size = 256)) %>% 
-      rename_with(\(x) paste0("unit_", x),.cols = -video) %>% 
-      inner_join(ck2017_kragel2019_classes, by = "video")
-    # Use pre-existing Kragel 2019 train-test split to make an rsample-compatible split object
-    make_splits(x = filter(activations, split == "train"),
-                assessment = filter(activations, split == "test"))
-  }
-)
-
-target_ck2017_kragel2019_fc7_preds <- tar_target(
-  name = ck2017_kragel2019_fc7_preds,
-  command = {
-    discrim_recipe <- ck2017_kragel2019_fc7_rsplit %>% 
-      training() %>% 
-      get_discrim_recipe()
-    
-    discrim_recipe %>% 
-      get_discrim_workflow() %>% 
-      fit(data = training(ck2017_kragel2019_fc7_rsplit)) %>% 
-      get_discrim_preds_from_trained_model(in_recipe = discrim_recipe,
-                                           test_data = testing(ck2017_kragel2019_fc7_rsplit))
-    }
-)
-
-## beh permutation testing ----
-
-# Note that these are no longer paralleled using tar_rep
-# as perm_beh_metrics() now takes finished predictions and only permutes the true outcomes
-# leaving the predictions (and effectively the training model) the same every time
-# speeding up the operation mightily as models don't need to be refit
-target_perms_ck2017_flynet <- tar_target(
-  name = perms_ck2017_flynet,
-  command = perm_beh_metrics(in_preds = ck2017_flynet_preds,
-                     truth_col = emotion_obs,
-                     estimate_col = emotion_pred,
-                     times = n_batches * n_reps_per_batch) %>% 
-    select(-splits)
-)
-
-target_perms_ck2017_kragel2019 <- tar_target(
-  name = perms_ck2017_kragel2019,
-  command = perm_beh_metrics(in_preds = ck2017_kragel2019_preds_videowise,
-                             truth_col = emotion_obs,
-                             estimate_col = emotion_pred,
-                             times = n_batches * n_reps_per_batch) %>% 
-    select(-splits)
-)
-
-target_perms_ck2017_kragel2019_fc7 <- tar_target(
-  name = perms_ck2017_kragel2019_fc7,
-  command = perm_beh_metrics(in_preds = ck2017_kragel2019_fc7_preds,
-                             truth_col = emotion_obs,
-                             estimate_col = emotion_pred,
-                             times = n_batches * n_reps_per_batch) %>% 
-    select(-splits)
 )
 
 ## fmri data input and preproc ----
@@ -491,27 +259,7 @@ target_perms_flynet_sc_nsd <- tar_rep(
 
 ## the list of all the target metanames ----
 
-list(target_ck2017_ratings,
-     target_ck2017_censored,
-     target_ck2017_kragel2019_train,
-     target_ck2017_kragel2019_test,
-     target_ck2017_kragel2019_classes,
-     target_zhou2022_weights,
-     target_py_flynet_utils,
-     target_py_convert_flynet_weights,
-     target_py_calc_flynet_activations,
-     target_ck2017_kragel2019_preds_framewise,
-     target_ck2017_kragel2019_preds_videowise,
-     target_perms_ck2017_kragel2019,
-     target_ck2017_kragel2019_activations_fc7,
-     target_ck2017_kragel2019_fc7_rsplit,
-     target_ck2017_kragel2019_fc7_preds,
-     target_perms_ck2017_kragel2019_fc7,
-     target_flynet_weights,
-     target_flynet_activations_raw_ck2017,
-     target_flynet_activations_fit_ck2017,
-     target_ck2017_flynet_preds,
-     target_perms_ck2017_flynet,
+list(target_flynet_weights,
      target_flynet_activations_raw_studyforrest,
      target_flynet_activations_convolved_studyforrest,
      target_flynet_activations_raw_nsd,

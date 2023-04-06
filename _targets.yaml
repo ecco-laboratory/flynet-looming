@@ -1,3 +1,6 @@
-main:
-  script: R/_targets.R
-  store: ignore/_targets
+retinotopy:
+  script: R/_targets_retinotopy.R
+  store: ignore/_targets/retinotopy
+subjective:
+  script: R/_targets_subjective.R
+  store: ignore/_targets/subjective
