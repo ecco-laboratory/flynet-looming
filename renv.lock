@@ -564,6 +564,21 @@
       "Hash": "cf6b206a045a684728c3267ef7596190",
       "Requirements": []
     },
+    "discrim": {
+      "Package": "discrim",
+      "Version": "1.0.0",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Hash": "5f537707f50f9c620100e4177061b753",
+      "Requirements": [
+        "dials",
+        "parsnip",
+        "purrr",
+        "rlang",
+        "tibble",
+        "withr"
+      ]
+    },
     "dplyr": {
       "Package": "dplyr",
       "Version": "1.0.10",
