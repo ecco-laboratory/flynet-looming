@@ -221,6 +221,20 @@ def convert_flow_to_rgb_cart(frames):
     frames_converted = np.stack(frames_converted, axis=0)
     return frames_converted
 
+def write_arrays_to_gif(frames, filename, fps=25):
+    # Assumes frames are stored as ndarrays
+    # So converts to list of pillow Images first
+    frames = [Image.fromarray(frames[i]) for i in range(len(frames))]
+
+    frames[0].save(
+        filename,
+        save_all=True, 
+        append_images=frames[1:], 
+        optimize=False, 
+        duration=1000/fps, 
+        loop=0 # this means loop!
+    )
+    
 def write_arrays_to_imgs(frames, filename_stem):
     # Assumes frames are stored as ndarrays
     # So converts to pillow Image first
