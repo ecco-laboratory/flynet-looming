@@ -22,7 +22,7 @@ tar_option_set(
                "discrim",
                "tidyverse",
                "magrittr",
-               "crayon"), # packages that your targets need to run
+               "rlang"), # packages that your targets need to run
   format = "rds" # default storage format
   # Set other options as needed.
 )
