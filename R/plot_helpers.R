@@ -9,18 +9,15 @@
 # only the things that would NEVER get overwritten based on different thematic vibes
 
 plot_confusion_matrix <- function (confusions, row_col, col_col, fill_col, level_order = NULL) {
-  row_col <- enquo(row_col)
-  col_col <- enquo(col_col)
-  fill_col <- enquo(fill_col)
   
   if (!is.null(level_order)) {
     confusions %<>%
-      mutate(across(c(!!row_col, !!col_col), \(x) factor(x, levels = level_order)))
+      mutate(across(c({{row_col}}, {{col_col}}), \(x) factor(x, levels = level_order)))
   }
   
   out <- confusions %>% 
-    ggplot(aes(x = col_col, y = fct_rev(!!row_col))) + 
-    geom_raster(aes(fill = !!fill_col)) + 
+    ggplot(aes(x = {{col_col}}, y = fct_rev({{row_col}}))) + 
+    geom_raster(aes(fill = {{fill_col}})) + 
     guides(x = guide_axis(angle = 45))
   
   return (out)
