@@ -171,7 +171,7 @@ class EmoNet(nn.Module):
         # I feel like they are equivalent when the nodes coming in are 1x1px
         # but this feels hackier somehow. Matlab! Dum dum!
         self.Conv_7 = nn.Conv2d(4096, num_classes, kernel_size=1, stride=1)
-        self.Flatten_0 = nn.Flatten()
+        self.Flatten_0 = nn.Flatten(start_dim=-3, end_dim=-1), # flatten all except batch and class dims
         self.Softmax_0 = nn.Softmax(dim=-1)
             
         # TODO: What happens when ReLU is inplace vs not (as ONNX import)?
@@ -251,7 +251,7 @@ class EmoNetPythonic(nn.Module):
         )
         self.classifier = nn.Sequential(
             nn.Conv2d(4096, num_classes, kernel_size=1, stride=1),
-            nn.Flatten(),
+            nn.Flatten(start_dim=-3, end_dim=-1), # flatten all except batch and class dims
             nn.Softmax(dim=-1)
         )
     
