@@ -18,7 +18,6 @@ tar_option_set(
   packages = c("mixOmics",
                "tidymodels",
                "plsmod",
-               "discrim",
                "tidyverse",
                "magrittr",
                "crayon"), # packages that your targets need to run
@@ -44,7 +43,7 @@ plan(batchtools_slurm,
                       # walltime 86400 for 24h (partition day-long)
                       # walltime 1800 for 30min (partition short)
                       walltime = 86400L,
-                      memory = 500L,
+                      memory = 1000L,
                       partition = "day-long"))
 # These parameters are relevant later inside the permutation testing targets
 n_batches <- 50
@@ -59,19 +58,6 @@ tar_source(c("R/get_flynet_activation_timecourses.R",
 # source("other_functions.R") # Source other scripts as needed. # nolint
 
 ## python scripts ----
-
-## flynet setup stuff ----
-
-target_flynet_weights <- tar_target(
-  name = flynet_weights,
-  command = {
-    system2("python", args = c(py_convert_flynet_weights, "-u 256"))
-    here::here("ignore",
-               "models",
-               "MegaFlyNet256.pt")
-    },
-  format = "file"
-)
 
 ## flynet activations ----
 
@@ -259,8 +245,7 @@ target_perms_flynet_sc_nsd <- tar_rep(
 
 ## the list of all the target metanames ----
 
-list(target_flynet_weights,
-     target_flynet_activations_raw_studyforrest,
+list(target_flynet_activations_raw_studyforrest,
      target_flynet_activations_convolved_studyforrest,
      target_flynet_activations_raw_nsd,
      target_flynet_activations_convolved_nsd,
