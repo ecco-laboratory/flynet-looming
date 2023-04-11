@@ -173,6 +173,43 @@ make_full_confusions <- function (preds_flynet, preds_emonet, path_ratings, path
   return (out)
 }
 
+# takes the long confusions from the above function and turns it into a dist object
+convert_long_to_dist <- function (distances, row_col, col_col, y_col, flip_dist = TRUE) {
+  row_col <- enquo(row_col)
+  col_col <- enquo(col_col)
+  y_col <- enquo(y_col)
+  
+  # If the input was not previously symmetrical,
+  # this will forcibly average the corresponding cells and turn it into a half/triangle matrix
+  # If the input was ALREADY symmetrical,
+  # this should only have the effect of turning it into a half/triangle matrix
+  # Either way, that half matrix is what as.dist() can coerce to a distance object
+  
+  pre_dist <- distances %>% 
+    # First, break the row-column association in preparation for averaging across triangles of the matrix
+    mutate(across(c(!!row_col, !!col_col), as.character), 
+           cols = map2(!!row_col, !!col_col,
+                       \(x, y) set_names(sort(c(x, y)), nm = c("id1", "id2")))) %>%
+    unnest_wider(cols) %>% 
+    # This stuff actually does the averaging across
+    group_by(id1, id2) %>% 
+    # take advantage of this moment to clear up later code by not having to unwrap a col name as variable
+    summarize(y = mean(!!y_col))
+  
+  if (flip_dist) {
+    pre_dist %<>% 
+      mutate(y = 1 - y)
+  }
+  
+  out <- pre_dist %>% 
+    pivot_wider(id_cols = id2, names_from = id1, values_from = y) %>%
+    column_to_rownames("id2") %>% 
+    # This assumes the diagonal dissimilarity is 0, which is most definitely not true...
+    as.dist(diag = TRUE)
+  
+  return (out)
+}
+
 # This is only for plotting symmetrized distances at the moment
 # It keeps both triangles of the matrix otherwise the triangleyness depends on the ordering of levels
 # which very much is not handled by this

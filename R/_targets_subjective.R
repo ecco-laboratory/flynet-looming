@@ -322,6 +322,40 @@ target_confusions_ckvids <- tar_target(
                                  ids.train_kragel2019)
 )
 
+target_mds.coords_ckvids <- tar_target(
+  name = mds.coords_ckvids,
+  command = {
+    rating_means <- read_csv(ratings_ck2017) %>% 
+      select(video = Filename, arousal = arousal...37, valence) %>% 
+      # Keep only the TRAINING videos
+      # so this has the effect of "fitting" a "model" on the training videos
+      inner_join(read_csv(ids.train_kragel2019), 
+                 by = "video") %>% 
+      group_by(emotion) %>% 
+      summarize(across(c(arousal, valence), mean)) %>% 
+      filter(emotion %in% levels(preds_flynet_ckvids$emotion_obs))
+    
+  list(emonet = convert_long_to_dist(distances = confusions_ckvids,
+                                     row_col = emotion_obs,
+                                     col_col = emotion_pred,
+                                     y_col = prob_emonet),
+       flynet = convert_long_to_dist(distances = confusions_ckvids,
+                                     row_col = emotion_obs,
+                                     col_col = emotion_pred,
+                                     y_col = prob_flynet)) %>% 
+    map(\(x) x %>% 
+          MASS::isoMDS(y = rating_means %>% 
+                         select(-emotion) %>% 
+                         as.matrix() %>% 
+                         scale()) %>% 
+          pluck("points") %>% 
+          set_colnames(c("x", "y")) %>% 
+          as_tibble(rownames = "emotion")) %>%
+    bind_rows(.id = "model_type") %>% 
+    left_join(rating_means, by = "emotion")
+  }
+)
+
 ## plotzzz ----
 
 target_plot_model.acc_ckvids <- tar_target(
@@ -459,6 +493,7 @@ list(target_ratings_ck2017,
      target_preds_flynet_ckvids,
      target_perms_flynet_ckvids,
      target_confusions_ckvids,
+     target_mds.coords_ckvids,
      target_plot_model.acc_ckvids,
      target_plot_model.acc.by.category_ckvids,
      target_plot.confusion.flynet_ckvids,
