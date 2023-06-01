@@ -4,3 +4,6 @@ retinotopy:
 subjective:
   script: R/_targets_subjective.R
   store: ignore/_targets/subjective
+eyeblink:
+  script: R/_targets_eyeblink.R
+  store: ignore/_targets/eyeblink
