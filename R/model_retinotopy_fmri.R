@@ -75,12 +75,14 @@ get_pls_preds <- function (in_x, in_y, test_subjs, pls_num_comp = 20L) {
     # mixOmics is the only available engine so just leave it
     add_model(parsnip::pls(mode = "regression",
                            predictor_prop = 1,
-                           num_comp = pls_num_comp))
+                           num_comp = pls_num_comp)) %>% 
+    add_recipe(pls_recipe)
   
   # get and process model preds
-  pred <- pls_workflow %>% 
-    add_recipe(pls_recipe) %>% 
-    fit(data = train_data) %>% 
+  pls_fit <- pls_workflow %>% 
+    fit(data = train_data)
+  
+  pred <- pls_fit %>% 
     # "predict" on the FULL x
     predict(new_data = in_x) %>% 
     # first bind onto the x to recover the observation identifying columns
@@ -99,7 +101,8 @@ get_pls_preds <- function (in_x, in_y, test_subjs, pls_num_comp = 20L) {
                  names_transform = list(voxel_num = as.integer)) %>% 
     rename(pred = .pred)
   
-  return (pred)
+  return (list(fit = pls_fit,
+               pred = pred))
   
 }
 
@@ -108,7 +111,7 @@ get_pls_preds <- function (in_x, in_y, test_subjs, pls_num_comp = 20L) {
 # permutation now lives here because we are permuting the held-out testing data
 # and NOT the data going into the model
 # so that we can hold the model constant and not retrain it
-wrap_pred_metrics <- function (df_xval, in_y, permute_params = NULL) {
+wrap_pred_metrics <- function (df_xval, in_y, permute_params = NULL, decoding = TRUE) {
   if (!is.null(permute_params)) {
     permuted_trs <- get_permuted_order(in_y, permute_params$n_cycles)
     # only shuffle the y order (the real BOLD timepoints in the TESTING data)
@@ -145,16 +148,20 @@ wrap_pred_metrics <- function (df_xval, in_y, permute_params = NULL) {
                             calc_groupavg_timeseries()),
            perf = map2(preds, groupavg,
                       \(x, y) calc_perf(x, groupavg = y), 
-                      .progress = "Estimating encoding performance"),
-           decoding = map(preds,
-                          \(x) get_decoding(x, 
-                                            model_spec = parsnip::pls(mode = "classification", 
-                                                                      predictor_prop = 1, 
-                                                                      num_comp = 10L)),
-                          .progress = "Fitting decoding model"
-           )
+                      .progress = "Estimating encoding performance")
     ) %>% 
     select(-groupavg)
+  
+  if (decoding) {
+    out %<>%
+      mutate(decoding = map(preds,
+                            \(x) get_decoding(x, 
+                                              model_spec = parsnip::pls(mode = "classification", 
+                                                                        predictor_prop = 1, 
+                                                                        num_comp = 10L)),
+                            .progress = "Fitting decoding model"
+             ))
+  }
   
   return (out)
 }
@@ -297,6 +304,8 @@ fit_xval <- function (in_x, in_y, n_folds = NULL) {
                        \(x) get_pls_preds(in_x = in_x,
                                           in_y = in_y,
                                           test_subjs = x),
-                       .progress = "Estimating one xval round"))
+                       .progress = "Estimating one xval round")) %>% 
+    unnest_wider(preds) %>% 
+    rename(fits = fit, preds = pred)
 }
 
