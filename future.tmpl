@@ -22,17 +22,17 @@
 log.file = fs::path_expand(log.file)
 -%>
 
-
+#SBATCH --account=default
+<%= if (!is.null(resources$nodelist)) sprintf(paste0("#SBATCH --nodelist='", resources$nodelist, "'")) %>
 #SBATCH --job-name=<%= job.name %>
-#SBATCH --nodelist=<%= resources$nodelist %>
 #SBATCH --output=<%= log.file %>
 #SBATCH --error=<%= log.file %>
 #SBATCH --time=<%= ceiling(resources$walltime / 60) %>
 #SBATCH --ntasks=<%= resources$ntasks %>
-#SBATCH --cpus-per-task=<%= resources$ncpus %>
 #SBATCH --mem-per-cpu=<%= resources$memory %>
 <%= if (!is.null(resources$partition)) sprintf(paste0("#SBATCH --partition='", resources$partition, "'")) %>
 <%= if (array.jobs) sprintf("#SBATCH --array=1-%i", nrow(jobs)) else "" %>
+#SBATCH
 
 ## Initialize work environment like
 ## source /etc/profile
