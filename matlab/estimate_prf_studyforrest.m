@@ -11,9 +11,11 @@ this_n_folds = 1;
 sc_data = load(fullfile(studyforrest_dir, 'DATA_bpf.mat'));
 v1_data = load(fullfile(studyforrest_dir, 'V1_DATA_bpf.mat'));
 sc_prf = estimate_prf(sc_data, this_tr_length, this_n_folds);
+DATA = sc_prf;
+save('/home/data/eccolab/studyforrest-data-phase2/pred_sc_prf_groupavg.mat', "DATA")
 v1_prf = estimate_prf(v1_data, this_tr_length, this_n_folds);
-save('/home/data/eccolab/studyforrest-data-phase2/pred_sc_prf_groupavg.mat', "sc_prf")
-save('/home/data/eccolab/studyforrest-data-phase2/pred_v1_prf_groupavg.mat', "v1_prf")
+DATA = v1_prf;
+save('/home/data/eccolab/studyforrest-data-phase2/pred_v1_prf_groupavg.mat', "DATA")
 
 %% giant wrapper function to estimate pRFs from fMRI data
 
@@ -66,7 +68,7 @@ function DATA = estimate_prf(fmriData, trLength, nFolds)
         else 
             vidFramesTrain = cell(size(fmriData, 2));
         end
-        
+
         for i=1:length(vidFramesTrain)
             vidFramesTrain{i} = vidFramesDownsampled;
         end
