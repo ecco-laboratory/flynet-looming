@@ -6,9 +6,10 @@
 
 ## permutation by time ----
 
-# Returns a df with ONLY subj_num, old (true) TR, and permuted TR
+# Returns a df with ONLY old (true) TR, and permuted TR
 # to be used for feeding into get_pls_metrics() so that the same randomization
 # can be applied across different xval folds with the same iteration number
+# and where the timecourse is permuted in the same way for each subject!!!
 get_permuted_order <- function (in_y, n_cycles) {
   
   # 0 if the first TR is 1
@@ -27,14 +28,16 @@ get_permuted_order <- function (in_y, n_cycles) {
   }
   
   out <- in_y %>% 
-    select(subj_num, run_type, run_num, stim_type, tr_num) %>% 
-    group_by(subj_num, run_type, run_num, stim_type) %>% 
+    select(run_type, run_num, stim_type, tr_num) %>% 
+    distinct()
+    group_by(run_type, run_num, stim_type) %>% 
     # a grouping variable for cycle num will make it easier
     # to permute within each stimulus cycle if there are multiple cycles in a stim-type block/run
     # adjust so the TR num starts counting from 0, then divide... evenly?
     mutate(cycle_length = n() / n_cycles,
            cycle_num = (tr_num - (tr_start_offset + 1)) %/% cycle_length) %>% 
-    group_by(subj_num, run_type, run_num, stim_type, cycle_length, cycle_num) %>% 
+    group_by(run_type, run_num, stim_type, cycle_length, cycle_num) %>% 
+    # this one actually does the permuting! should shuffle only TR within cycle, basically
     slice_sample(prop = 1) %>% 
     mutate(tr_num_new = 1:n() + (cycle_length * cycle_num) + tr_start_offset) %>% 
     ungroup() %>% 
@@ -46,17 +49,7 @@ get_permuted_order <- function (in_y, n_cycles) {
 ## fits the models eek ----
 
 # Fit model and extract predicted BOLD for a single iteration of data
-get_pls_preds <- function (in_x, in_y, test_subjs, pls_num_comp = 20L, permute_order = NULL) {
-  
-  if (!is.null(permute_order)) {
-    # only shuffle the y order (the real BOLD timepoints)
-    in_y %<>% 
-      # bind on the real-to-permuted TR mappings
-      left_join(permute_order, by = c("subj_num", "run_type", "run_num", "stim_type", "tr_num")) %>% 
-      # drop the real TRs
-      select(-tr_num) %>% 
-      rename(tr_num = tr_num_new)
-  }
+get_pls_preds <- function (in_x, in_y, test_subjs, pls_num_comp = 20L) {
   
   in_y %<>%
     mutate(split_type = if_else(subj_num %in% test_subjs, "test", "train"))
@@ -110,12 +103,48 @@ get_pls_preds <- function (in_x, in_y, test_subjs, pls_num_comp = 20L, permute_o
   
 }
 
-wrap_pred_metrics <- function (df_xval, in_y) {
-  groupavg <- calc_groupavg_timeseries(in_y)
+# permute_params = NULL means DO NOT PERMUTE!!!
+# otherwise, it should be list() with n_cycles
+# permutation now lives here because we are permuting the held-out testing data
+# and NOT the data going into the model
+# so that we can hold the model constant and not retrain it
+wrap_pred_metrics <- function (df_xval, in_y, permute_params = NULL) {
+  if (!is.null(permute_params)) {
+    permuted_trs <- get_permuted_order(in_y, permute_params$n_cycles)
+    # only shuffle the y order (the real BOLD timepoints in the TESTING data)
+    df_xval %<>%
+      mutate(obs_permuted = map(preds, \(x) x %>% 
+                                  select(run_type, run_num, stim_type, tr_num, obs) %>% 
+                                  # bind on the real-to-permuted TR mappings
+                                  left_join(permuted_trs,
+                                            by = c("run_type",
+                                                   "run_num",
+                                                   "stim_type",
+                                                   "tr_num")) %>%
+                                  # drop the real TRs
+                                  select(-tr_num) %>% 
+                                  rename(tr_num = tr_num_new)
+      ),
+      # drop the real obs and paste the permuted obs back on
+      preds = map2(preds, obs_permuted, \(x, y) x %>% 
+                     select(-obs) %>% 
+                     left_join(y,
+                               by = c("run_type",
+                                      "run_num",
+                                      "stim_type",
+                                      "tr_num")))) %>% 
+      select(-obs_permuted)
+  }
   
   out <- df_xval %>% 
-    mutate(perf = map(preds,
-                      \(x) calc_perf(x, groupavg = groupavg), 
+    # doing groupavg separately for each xval fold should allow us to exclude
+    # the held-out subject from each group-average timeseries
+    mutate(groupavg = map(preds,
+                          \(x) in_y %>% 
+                            filter(subj_num != unique(x$subj_num)) %>% 
+                            calc_groupavg_timeseries()),
+           perf = map2(preds, groupavg,
+                      \(x, y) calc_perf(x, groupavg = y), 
                       .progress = "Estimating encoding performance"),
            decoding = map(preds,
                           \(x) get_decoding(x, 
@@ -124,7 +153,8 @@ wrap_pred_metrics <- function (df_xval, in_y) {
                                                                       num_comp = 10L)),
                           .progress = "Fitting decoding model"
            )
-    )
+    ) %>% 
+    select(-groupavg)
   
   return (out)
 }
@@ -229,7 +259,8 @@ get_decoding <- function (pred, model_spec, stim_type_to_classify = "ring_expand
                 prep(train_data) %>% 
                 bake(new_data = NULL, all_outcomes())) %>% 
     rename(true_class = !!stim_type_to_classify, pred_class = .pred_class) %>% 
-    count(true_class, pred_class)
+    mutate(across(ends_with("_class"), \(x) factor(x))) %>% 
+    metrics(truth = true_class, estimate = pred_class)
   
   out_test <- decoder_fit %>% 
     predict(new_data = test_data) %>% 
@@ -237,7 +268,8 @@ get_decoding <- function (pred, model_spec, stim_type_to_classify = "ring_expand
                 prep(test_data) %>% 
                 bake(new_data = NULL, all_outcomes())) %>% 
     rename(true_class = !!stim_type_to_classify, pred_class = .pred_class) %>% 
-    count(true_class, pred_class)
+    mutate(across(ends_with("_class"), \(x) factor(x))) %>% 
+    metrics(truth = true_class, estimate = pred_class)
   
   out <- bind_rows(pred = out_train, obs = out_test, .id = "decoding_type")
   
@@ -249,7 +281,7 @@ get_decoding <- function (pred, model_spec, stim_type_to_classify = "ring_expand
 
 # The DEFAULT is leave-one-subject-out
 prep_xval <- function (in_y, n_folds = NULL) {
-  
+
   n_subjs <- length(unique(in_y$subj_num))
   if (is.null(n_folds)) n_folds <- n_subjs
   
@@ -259,22 +291,12 @@ prep_xval <- function (in_y, n_folds = NULL) {
   return (out)
 }
 
-# permute_params = NULL means DO NOT PERMUTE!!!
-# otherwise, it should be list() with n_cycles
-fit_xval <- function (in_x, in_y, n_folds = NULL, permute_params = NULL) {
-  
-  if (!is.null(permute_params)) {
-    permuted_trs <- get_permuted_order(in_y, permute_params$n_cycles)
-  } else {
-    permuted_trs <- NULL
-  }
-  
+fit_xval <- function (in_x, in_y, n_folds = NULL) {
   out <- prep_xval(in_y, n_folds) %>%
     mutate(preds = map(test_subjs,
                        \(x) get_pls_preds(in_x = in_x,
                                           in_y = in_y,
-                                          test_subjs = x, 
-                                          permute_order = permuted_trs),
+                                          test_subjs = x),
                        .progress = "Estimating one xval round"))
 }
 

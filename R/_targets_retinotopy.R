@@ -30,10 +30,6 @@ options(clustermq.scheduler = "slurm")
 options(clustermq.template = "clustermq.tmpl")
 
 # tar_make_future() configuration (okay to leave alone):
-# Install packages {{future}}, {{future.callr}}, and {{future.batchtools}} to allow use_targets() to configure tar_make_future() options.
-
-# plan(multicore)
-# eventually... when I figure out why slurm is activating R 3.6.3
 n_slurm_cpus <- 1L
 plan(batchtools_slurm,
      template = "future.tmpl",
@@ -61,48 +57,36 @@ tar_source(c("R/get_flynet_activation_timecourses.R",
 
 ## flynet activations ----
 
-target_flynet_activations_raw_studyforrest <- tar_map(
-  values = tibble(filename = list.files(here::here("ignore",
-                                                   "outputs",
-                                                   "flynet_activations",
-                                                   "132x132_stride8",
-                                                   "studyforrest_retinotopy"))),
-  tar_target(name = flynet_activation_raw_studyforrest,
-             command = here::here("ignore",
+target_flynet_activations_raw_studyforrest <- tar_target(
+  name = flynet_activations_raw_studyforrest,
+  command = list.files(here::here("ignore",
                                   "outputs",
                                   "flynet_activations",
                                   "132x132_stride8",
-                                  "studyforrest_retinotopy",
-                                  filename),
-             format = "file")
+                                  "studyforrest_retinotopy"),
+                       full.names = TRUE),
+  format = "file"
 )
 
-target_flynet_activations_convolved_studyforrest <- tar_combine(
+target_flynet_activations_convolved_studyforrest <- tar_target(
   name = flynet_activations_convolved_studyforrest,
-  target_flynet_activations_raw_studyforrest,
-  command = get_flynet_activation_studyforrest(vctrs::vec_c(!!!.x))
+  command = get_flynet_activation_studyforrest(flynet_activations_raw_studyforrest)
 )
 
-target_flynet_activations_raw_nsd <- tar_map(
-  values = tibble(filename = list.files(here::here("ignore",
-                                                   "outputs",
-                                                   "flynet_activations",
-                                                   "132x132_stride8",
-                                                   "nsd_retinotopy"))),
-  tar_target(name = flynet_activation_raw_nsd,
-             command = here::here("ignore",
+target_flynet_activations_raw_nsd <- tar_target(
+  name = flynet_activations_raw_nsd,
+  command = list.files(here::here("ignore",
                                   "outputs",
                                   "flynet_activations",
                                   "132x132_stride8",
-                                  "nsd_retinotopy",
-                                  filename),
-             format = "file")
+                                  "nsd_retinotopy"),
+                       full.names = TRUE),
+  format = "file"
 )
 
-target_flynet_activations_convolved_nsd <- tar_combine(
+target_flynet_activations_convolved_nsd <- tar_target(
   name = flynet_activations_convolved_nsd,
-  target_flynet_activations_raw_nsd,
-  command = get_flynet_activation_nsd(vctrs::vec_c(!!!.x))
+  command = get_flynet_activation_nsd(flynet_activations_raw_nsd)
 )
 
 ## fmri data input and preproc ----
@@ -193,6 +177,12 @@ target_pls_flynet_sc_studyforrest <- tar_target(
                      in_y = fmri_data_sc_studyforrest)
 )
 
+target_pls_flynet_v1_studyforrest <- tar_target(
+  name = pls_flynet_v1_studyforrest,
+  command = fit_xval(in_x = flynet_activations_convolved_studyforrest,
+                     in_y = fmri_data_v1_studyforrest)
+)
+
 target_pls_flynet_sc_nsd <- tar_target(
   name = pls_flynet_sc_nsd,
   command = fit_xval(in_x = flynet_activations_convolved_nsd,
@@ -208,6 +198,15 @@ target_metrics_flynet_sc_studyforrest <- tar_target(
   }
 )
 
+target_metrics_flynet_v1_studyforrest <- tar_target(
+  name = metrics_flynet_v1_studyforrest,
+  command = {
+    pls_flynet_v1_studyforrest %>% 
+      wrap_pred_metrics(in_y = fmri_data_v1_studyforrest) %>% 
+      select(-preds)
+  }
+)
+
 target_metrics_flynet_sc_nsd <- tar_target(
   name = metrics_flynet_sc_nsd,
   command = pls_flynet_sc_nsd %>% 
@@ -219,10 +218,9 @@ target_metrics_flynet_sc_nsd <- tar_target(
 
 target_perms_flynet_sc_studyforrest <- tar_rep(
   name = perms_flynet_sc_studyforrest,
-  command = fit_xval(in_x = flynet_activations_convolved_studyforrest,
-                     in_y = fmri_data_sc_studyforrest,
-                     permute_params = list(n_cycles = 5L)) %>% 
-    wrap_pred_metrics(in_y = fmri_data_sc_studyforrest) %>% 
+  command = pls_flynet_sc_studyforrest %>% 
+    wrap_pred_metrics(in_y = fmri_data_sc_studyforrest,
+                      permute_params = list(n_cycles = 5L)) %>% 
     select(-preds),
   batches = n_batches,
   reps = n_reps_per_batch,
@@ -232,10 +230,9 @@ target_perms_flynet_sc_studyforrest <- tar_rep(
 
 target_perms_flynet_sc_nsd <- tar_rep(
   name = perms_flynet_sc_nsd,
-  command = fit_xval(in_x = flynet_activations_convolved_nsd,
-                     in_y = fmri_data_sc_nsd,
-                     permute_params = list(n_cycles = 1L)) %>% 
-    wrap_pred_metrics(in_y = fmri_data_sc_nsd) %>% 
+  command = pls_flynet_sc_nsd %>% 
+    wrap_pred_metrics(in_y = fmri_data_sc_nsd,
+                      permute_params = list(n_cycles = 1L)) %>% 
     select(-preds),
   batches = n_batches,
   reps = n_reps_per_batch,
@@ -260,8 +257,10 @@ list(target_flynet_activations_raw_studyforrest,
      target_prf_data_sc_studyforrest,
      target_prf_data_v1_studyforrest,
      target_pls_flynet_sc_studyforrest,
+     target_pls_flynet_v1_studyforrest,
      target_pls_flynet_sc_nsd,
      target_metrics_flynet_sc_studyforrest,
+     target_metrics_flynet_v1_studyforrest,
      target_metrics_flynet_sc_nsd,
      target_perms_flynet_sc_studyforrest,
      target_perms_flynet_sc_nsd
