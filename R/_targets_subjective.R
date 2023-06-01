@@ -41,11 +41,12 @@ plan(batchtools_slurm,
      template = "future.tmpl",
      resources = list(ntasks = 1L,
                       ncpus = n_slurm_cpus,
-                      nodelist = "node1",
+                      # nodelist = "node1",
                       # walltime 86400 for 24h (partition day-long)
                       # walltime 1800 for 30min (partition short)
                       walltime = 1800L,
-                      memory = 500L,
+                      # Please be mindful this is not THAT much. No honker dfs pls
+                      memory = 250L,
                       partition = "short"))
 # These parameters are relevant later inside the permutation testing targets
 n_batches <- 50
@@ -279,47 +280,115 @@ target_preds_emonet.fc7_ckvids <- tar_target(
   }
 )
 
+target_coefs.confusions_bothnets_ckvids <- tar_target(
+  name = coefs.confusions_bothnets_ckvids,
+  command = get_confusion_regression_coefs(confusions_ckvids,
+                                           lm_formulas = list(valence = diff_valence ~ dist_flynet + dist_emonet,
+                                                              arousal = diff_arousal ~ dist_flynet + dist_emonet,
+                                                              fear = diff_fear ~ dist_flynet + dist_emonet,
+                                                              fear_no_arousal = diff_fear ~ dist_flynet + dist_emonet + diff_arousal))
+  
+)
+
+target_partial.r2.confusions_bothnets_ckvids <- tar_target(
+  name = partial.r2.confusions_bothnets_ckvids,
+  command = {
+    half_confusions <- confusions_ckvids %>% 
+      halve_confusions()
+    
+    tribble(~outcome, ~term, ~partial.r2,
+            "valence", "dist_flynet", calc_partial_r2(half_confusions, "diff_valence", "dist_flynet", "dist_emonet"),
+            "valence", "dist_emonet", calc_partial_r2(half_confusions, "diff_valence", "dist_emonet", "dist_flynet"),
+            "arousal", "dist_flynet", calc_partial_r2(half_confusions, "diff_arousal", "dist_flynet", "dist_emonet"),
+            "arousal", "dist_emonet", calc_partial_r2(half_confusions, "diff_arousal", "dist_emonet", "dist_flynet"),
+            "fear", "dist_flynet", calc_partial_r2(half_confusions, "diff_fear", "dist_flynet", "dist_emonet"),
+            "fear", "dist_emonet", calc_partial_r2(half_confusions, "diff_fear", "dist_emonet", "dist_flynet"),
+            "fear_no_arousal", "dist_flynet", calc_partial_r2(half_confusions, "diff_fear", "dist_flynet", c("dist_emonet", "diff_arousal")),
+            "fear_no_arousal", "dist_emonet", calc_partial_r2(half_confusions, "diff_fear", "dist_emonet", c("dist_flynet", "diff_arousal"))
+    )
+  }
+)
+
 ## beh permutation testing ----
 
-# Note that these are no longer paralleled using tar_rep
-# as perm_beh_metrics() now takes finished predictions and only permutes the true outcomes
+# I have returned to tar_rep...
+# even though perm_beh_metrics() now takes finished predictions and only permutes the true outcomes
 # leaving the predictions (and effectively the training model) the same every time
-# speeding up the operation mightily as models don't need to be refit
-target_perms_flynet_ckvids <- tar_target(
-  name = perms_flynet_ckvids,
-  command = perm_beh_metrics(in_preds = preds_flynet_ckvids,
+# models don't need to be refit, but AUC model accuracy takes a little while to estimate
+# (1 min per 100 iterations, ish) thus we actually can really gain from paralleling agian
+# feed n_reps_per_batch directly into permutations()
+# instead of the reps argument of tar_rep
+# because we only watn to call perm_beh_metrics once per iteration
+# to minimize the number of times the constant ratings CSV gets read in
+
+target_perms.metrics_bothnets_ckvids <- tar_rep(
+  name = perms_bothnets_ckvids,
+  command = perm_beh_metrics(in_preds_flynet = preds_flynet_ckvids,
+                             in_preds_emonet = preds.videowise_emonet_ckvids,
                              truth_col = emotion_obs,
                              estimate_col = emotion_pred,
-                             times = n_batches * n_reps_per_batch) %>% 
-    select(-splits)
+                             pred_prefix = ".pred", 
+                             path_ratings = ratings_ck2017, 
+                             path_ids_train = ids.train_kragel2019,
+                             times = n_reps_per_batch) %>% 
+    select(-splits),
+  batches = n_batches,
+  storage = "worker",
+  retrieval = "worker"
 )
 
-target_perms_emonet_ckvids <- tar_target(
-  name = perms_emonet_ckvids,
-  command = perm_beh_metrics(in_preds = preds.videowise_emonet_ckvids,
-                             truth_col = emotion_obs,
-                             estimate_col = emotion_pred,
-                             times = n_batches * n_reps_per_batch) %>% 
-    select(-splits)
-)
-
-target_perms_emonet.fc7_ckvids <- tar_target(
-  name = perms_emonet.fc7_ckvids,
-  command = perm_beh_metrics(in_preds = preds_emonet.fc7_ckvids,
-                             truth_col = emotion_obs,
-                             estimate_col = emotion_pred,
-                             times = n_batches * n_reps_per_batch) %>% 
-    select(-splits)
+# doing this for 2x the usual number of permutations, with fewer batch forks,
+# because the operation is fairly light so I want to minimize batch forks to keep the stuff trackable
+target_perms.partial.r2_bothnets_ckvids <- tar_rep(
+  name = perms.partial.r2_bothnets_ckvids,
+  command = {
+    valence <- perm_confusion_regression_coefs(in_confusions = confusions_ckvids,
+                                            y_col = "diff_valence",
+                                            x1_col = "dist_flynet",
+                                            x2_col = "dist_emonet",
+                                            times = n_reps_per_batch * 10)
+    
+    arousal <- perm_confusion_regression_coefs(in_confusions = confusions_ckvids,
+                                               y_col = "diff_arousal",
+                                               x1_col = "dist_flynet",
+                                               x2_col = "dist_emonet",
+                                               times = n_reps_per_batch * 10)
+    
+    fear <- perm_confusion_regression_coefs(in_confusions = confusions_ckvids,
+                                               y_col = "diff_fear",
+                                               x1_col = "dist_flynet",
+                                               x2_col = "dist_emonet",
+                                               times = n_reps_per_batch * 10)
+    
+    fear_no_arousal <- perm_confusion_regression_coefs(in_confusions = confusions_ckvids,
+                                            y_col = "diff_fear",
+                                            x1_col = "dist_flynet",
+                                            x2_col = "dist_emonet",
+                                            covar_cols = "diff_arousal",
+                                            times = n_reps_per_batch * 10)
+    bind_rows(valence = valence,
+              arousal = arousal,
+              fear = fear,
+              fear_no_arousal = fear_no_arousal,
+              .id = "outcome") %>% 
+      rename(partial.r2_flynet = partial.r2_x1,
+             partial.r2_emonet = partial.r2_x2)
+  },
+  batches = n_batches / 10,
+  storage = "worker",
+  retrieval = "worker"
 )
 
 ## long-form confusions and distances ----
 
 target_confusions_ckvids <- tar_target(
   name = confusions_ckvids,
-  command = make_full_confusions(preds_flynet_ckvids,
-                                 preds.videowise_emonet_ckvids,
-                                 ratings_ck2017,
-                                 ids.train_kragel2019)
+  command = make_full_confusions(
+    preds_flynet_ckvids,
+    preds.videowise_emonet_ckvids,
+    calc_distances_ratings(ratings_ck2017,
+                           ids.train_kragel2019)
+  )
 )
 
 target_mds.coords_ckvids <- tar_target(
@@ -338,11 +407,13 @@ target_mds.coords_ckvids <- tar_target(
   list(emonet = convert_long_to_dist(distances = confusions_ckvids,
                                      row_col = emotion_obs,
                                      col_col = emotion_pred,
-                                     y_col = prob_emonet),
+                                     y_col = dist_emonet,
+                                     flip_dist = FALSE),
        flynet = convert_long_to_dist(distances = confusions_ckvids,
                                      row_col = emotion_obs,
                                      col_col = emotion_pred,
-                                     y_col = prob_flynet)) %>% 
+                                     y_col = dist_flynet,
+                                     flip_dist = FALSE)) %>% 
     map(\(x) x %>% 
           MASS::isoMDS(y = rating_means %>% 
                          select(-emotion) %>% 
@@ -367,9 +438,12 @@ target_plot_model.acc_ckvids <- tar_target(
       group_by(model_type) %>% 
       accuracy(truth = emotion_obs, estimate = emotion_pred)
     
-    class_accuracy_pvals <- bind_rows(flynet = perms_flynet_ckvids,
-                                      emonet = perms_emonet_ckvids,
-                                      .id = "model_type") %>% 
+    class_accuracy_pvals <- perms_bothnets_ckvids %>% 
+      select(starts_with(".metrics")) %>% 
+      pivot_longer(starts_with(".metrics"),
+                   names_to = "model_type",
+                   values_to = ".metrics",
+                   names_prefix = ".metrics_") %>% 
       unnest(.metrics) %>% 
       rename(.estimate_perm = .estimate) %>% 
       left_join(class_accuracies, by = "model_type") %>% 
@@ -446,15 +520,13 @@ target_plot_model.acc.by.category_ckvids <- tar_target(
 target_plot.confusion.flynet_ckvids <- tar_target(
   name = plot.confusion.flynet_ckvids,
   command = confusions_ckvids %>% 
-      symmetrize_distances(row_col = emotion_obs, col_col = emotion_pred, y_col = prob_flynet) %>% 
-      plot_confusion_matrix(row_col = emotion_obs, col_col = emotion_pred, fill_col = prob_flynet)
+      plot_confusion_matrix(row_col = emotion_obs, col_col = emotion_pred, fill_col = dist_flynet)
 )
 
 target_plot.confusion.emonet_ckvids <- tar_target(
   name = plot.confusion.emonet_ckvids,
   command = confusions_ckvids %>% 
-    symmetrize_distances(row_col = emotion_obs, col_col = emotion_pred, y_col = prob_emonet) %>% 
-    plot_confusion_matrix(row_col = emotion_obs, col_col = emotion_pred, fill_col = prob_emonet)
+    plot_confusion_matrix(row_col = emotion_obs, col_col = emotion_pred, fill_col = dist_emonet)
 )
 
 target_plot.confusion.valence_ckvids <- tar_target(
@@ -482,16 +554,17 @@ list(target_ratings_ck2017,
      target_py_calc_flynet_activations,
      target_preds.framewise_emonet_ckvids,
      target_preds.videowise_emonet_ckvids,
-     target_perms_emonet_ckvids,
      target_activations_emonet.fc7_ckvids,
      target_rsplit_emonet.fc7_ckvids,
      target_preds_emonet.fc7_ckvids,
-     target_perms_emonet.fc7_ckvids,
      target_weights_flynet,
      target_activations_flynet_ckvids,
      target_rsplit_flynet_ckvids,
      target_preds_flynet_ckvids,
-     target_perms_flynet_ckvids,
+     target_coefs.confusions_bothnets_ckvids,
+     target_partial.r2.confusions_bothnets_ckvids,
+     target_perms.metrics_bothnets_ckvids,
+     target_perms.partial.r2_bothnets_ckvids,
      target_confusions_ckvids,
      target_mds.coords_ckvids,
      target_plot_model.acc_ckvids,
