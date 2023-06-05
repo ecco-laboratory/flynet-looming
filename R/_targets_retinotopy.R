@@ -181,11 +181,10 @@ targets_pls <- list(
                        in_y = fmri_data_sc_studyforrest)
   ),
   tar_target(
-    name = pls_flynet_sc_studyforrest_ring.expand,
-    command = fit_xval(in_x = flynet_activations_convolved_studyforrest %>% 
-                         filter(run_type == "ring_expand"),
-                       in_y = fmri_data_sc_studyforrest %>% 
-                         filter(run_type == "ring_expand"))
+    name = pls_flynet_sc_studyforrest_by.run.type,
+    command = fit_xval(in_x = flynet_activations_convolved_studyforrest,
+                       in_y = fmri_data_sc_studyforrest,
+                       by_run_type = TRUE)
   ),
   tar_target(
     name = pls_flynet_v1_studyforrest,
@@ -214,16 +213,17 @@ targets_metrics <- list(
     name = metrics_flynet_sc_studyforrest,
     command = {
       pls_flynet_sc_studyforrest %>% 
+        select(-fits) %>% 
         wrap_pred_metrics(in_y = fmri_data_sc_studyforrest) %>% 
         select(-preds)
     }
   ),
   tar_target(
-    name = metrics_flynet_sc_studyforrest_ring.expand,
+    name = metrics_flynet_sc_studyforrest_by.run.type,
     command = {
-      pls_flynet_sc_studyforrest_ring.expand %>% 
-        wrap_pred_metrics(in_y = fmri_data_sc_studyforrest %>% 
-                            filter(run_type == "ring_expand"),
+      pls_flynet_sc_studyforrest_by.run.type %>% 
+        select(-fits) %>% 
+        wrap_pred_metrics(in_y = fmri_data_sc_studyforrest,
                           decoding = FALSE) %>% 
         select(-preds)
     }
@@ -232,6 +232,7 @@ targets_metrics <- list(
     name = metrics_flynet_v1_studyforrest,
     command = {
       pls_flynet_v1_studyforrest %>% 
+        select(-fits) %>% 
         wrap_pred_metrics(in_y = fmri_data_v1_studyforrest) %>% 
         select(-preds)
     }
@@ -239,6 +240,7 @@ targets_metrics <- list(
   tar_target(
     name = metrics_flynet_sc_nsd,
     command = pls_flynet_sc_nsd %>% 
+      select(-fits) %>% 
       wrap_pred_metrics(in_y = fmri_data_sc_nsd) %>%
       select(-preds)
   ),
@@ -246,6 +248,7 @@ targets_metrics <- list(
     name = metrics_prf_sc_studyforrest,
     command = {
       pls_prf_sc_studyforrest %>% 
+        select(-fits) %>% 
         wrap_pred_metrics(in_y = fmri_data_sc_studyforrest) %>% 
         select(-preds)
     }
@@ -254,6 +257,7 @@ targets_metrics <- list(
     name = metrics_prf_v1_studyforrest,
     command = {
       pls_prf_v1_studyforrest %>% 
+        select(-fits) %>% 
         wrap_pred_metrics(in_y = fmri_data_v1_studyforrest) %>% 
         select(-preds)
     }
@@ -266,6 +270,7 @@ targets_perms <- list(
   tar_rep(
     name = perms_flynet_sc_studyforrest,
     command = pls_flynet_sc_studyforrest %>% 
+      select(-fits) %>% 
       wrap_pred_metrics(in_y = fmri_data_sc_studyforrest,
                         permute_params = list(n_cycles = 5L)) %>% 
       select(-preds),
@@ -274,10 +279,23 @@ targets_perms <- list(
     storage = "worker",
     retrieval = "worker"
   ),
-  
+  tar_rep(
+    name = perms_flynet_sc_studyforrest_by.run.type,
+    command = pls_flynet_sc_studyforrest_by.run.type %>% 
+      select(-fits) %>% 
+      wrap_pred_metrics(in_y = fmri_data_sc_studyforrest,
+                        permute_params = list(n_cycles = 5L),
+                        decoding = FALSE) %>% 
+      select(-preds),
+    batches = n_batches,
+    reps = n_reps_per_batch,
+    storage = "worker",
+    retrieval = "worker"
+  ),
   tar_rep(
     name = perms_flynet_sc_nsd,
     command = pls_flynet_sc_nsd %>% 
+      select(-fits) %>% 
       wrap_pred_metrics(in_y = fmri_data_sc_nsd,
                         permute_params = list(n_cycles = 1L)) %>% 
       select(-preds),
@@ -299,6 +317,7 @@ targets_plots <- list(
   tar_target(
     name = boxplot_cv.r_studyforrest,
     command = plot_boxplot_cv_r_studyforrest(metrics_flynet_sc_studyforrest,
+                                             metrics_flynet_sc_studyforrest_by.run.type,
                                              metrics_prf_sc_studyforrest)
   )
 )

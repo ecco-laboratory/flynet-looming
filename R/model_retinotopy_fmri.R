@@ -29,7 +29,7 @@ get_permuted_order <- function (in_y, n_cycles) {
   
   out <- in_y %>% 
     select(run_type, run_num, stim_type, tr_num) %>% 
-    distinct()
+    distinct() %>% 
     group_by(run_type, run_num, stim_type) %>% 
     # a grouping variable for cycle num will make it easier
     # to permute within each stimulus cycle if there are multiple cycles in a stim-type block/run
@@ -119,6 +119,8 @@ wrap_pred_metrics <- function (df_xval, in_y, permute_params = NULL, decoding = 
       mutate(obs_permuted = map(preds, \(x) x %>% 
                                   select(run_type, run_num, stim_type, tr_num, obs) %>% 
                                   # bind on the real-to-permuted TR mappings
+                                  # this SHOULD also flexibly handle when the data are split up by run type
+                                  # because left_join prioritizes the rows in the (subset) xval data
                                   left_join(permuted_trs,
                                             by = c("run_type",
                                                    "run_num",
@@ -287,25 +289,49 @@ get_decoding <- function (pred, model_spec, stim_type_to_classify = "ring_expand
 ## putting it all together ----
 
 # The DEFAULT is leave-one-subject-out
-prep_xval <- function (in_y, n_folds = NULL) {
+prep_xval <- function (in_y, n_folds = NULL, by_run_type = FALSE) {
 
   n_subjs <- length(unique(in_y$subj_num))
   if (is.null(n_folds)) n_folds <- n_subjs
   
-  out <- tibble(fold_num = 1:n_folds) %>% 
+  if (by_run_type) {
+    out <- crossing(fold_num = 1:n_folds,
+                    this_run_type = unique(in_y$run_type))
+  } else {
+    out <- tibble(fold_num = 1:n_folds)
+  }
+  
+  out %<>%
     mutate(test_subjs = map(fold_num, \(x) as.integer(seq(x, n_subjs, n_folds))))
   
   return (out)
 }
 
-fit_xval <- function (in_x, in_y, n_folds = NULL) {
-  out <- prep_xval(in_y, n_folds) %>%
-    mutate(preds = map(test_subjs,
-                       \(x) get_pls_preds(in_x = in_x,
-                                          in_y = in_y,
-                                          test_subjs = x),
-                       .progress = "Estimating one xval round")) %>% 
-    unnest_wider(preds) %>% 
+fit_xval <- function (in_x, in_y, n_folds = NULL, by_run_type = FALSE) {
+  out <- prep_xval(in_y, n_folds, by_run_type)
+  
+  if (by_run_type) {
+    out %<>%
+      mutate(preds = map2(test_subjs, this_run_type,
+                         \(x, y) get_pls_preds(in_x = in_x %>% 
+                                              filter(run_type == y),
+                                            in_y = in_y %>% 
+                                              filter(run_type == y),
+                                            test_subjs = x),
+                         .progress = "Estimating one xval round"))
+  } else {
+    out %<>%
+      mutate(preds = map(test_subjs,
+                         \(x) get_pls_preds(in_x = in_x,
+                                            in_y = in_y,
+                                            test_subjs = x),
+                         .progress = "Estimating one xval round"))
+  }
+  out %<>%
+    # for some reason, unnest_wider doesn't play nice with list-cols of workflow objects
+    # so need to hoist manually twice
+    hoist(preds, "fit") %>% 
+    hoist(preds, "pred") %>% 
     rename(fits = fit, preds = pred)
 }
 
