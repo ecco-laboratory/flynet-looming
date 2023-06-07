@@ -35,15 +35,15 @@ plan(batchtools_slurm,
      template = "future.tmpl",
      resources = list(ntasks = 1L,
                       ncpus = n_slurm_cpus,
-                      nodelist = "node1",
+                      # nodelist = "node1",
                       # walltime 86400 for 24h (partition day-long)
                       # walltime 1800 for 30min (partition short)
                       walltime = 86400L,
-                      memory = 1000L,
+                      memory = 4000L,
                       partition = "day-long"))
 # These parameters are relevant later inside the permutation testing targets
 n_batches <- 50
-n_reps_per_batch <- 200
+n_reps_per_batch <- 20
 
 # Run the R scripts in the R/ folder with your custom functions:
 tar_source(c("R/get_flynet_activation_timecourses.R",
@@ -181,10 +181,20 @@ targets_pls <- list(
                        in_y = fmri_data_sc_studyforrest)
   ),
   tar_target(
+    name = pls_pred.only_flynet_sc_studyforrest,
+    command = pls_flynet_sc_studyforrest %>% 
+      select(-fits)
+  ),
+  tar_target(
     name = pls_flynet_sc_studyforrest_by.run.type,
     command = fit_xval(in_x = flynet_activations_convolved_studyforrest,
                        in_y = fmri_data_sc_studyforrest,
                        by_run_type = TRUE)
+  ),
+  tar_target(
+    name = pls_pred.only_flynet_sc_studyforrest_by.run.type,
+    command = pls_flynet_sc_studyforrest_by.run.type %>% 
+      select(-fits)
   ),
   tar_target(
     name = pls_flynet_v1_studyforrest,
@@ -222,8 +232,7 @@ targets_metrics <- list(
   tar_target(
     name = metrics_flynet_sc_studyforrest,
     command = {
-      pls_flynet_sc_studyforrest %>% 
-        select(-fits) %>% 
+      pls_pred.only_flynet_sc_studyforrest %>% 
         wrap_pred_metrics(in_y = fmri_data_sc_studyforrest) %>% 
         select(-preds)
     }
@@ -231,8 +240,7 @@ targets_metrics <- list(
   tar_target(
     name = metrics_flynet_sc_studyforrest_by.run.type,
     command = {
-      pls_flynet_sc_studyforrest_by.run.type %>% 
-        select(-fits) %>% 
+      pls_pred.only_flynet_sc_studyforrest_by.run.type %>% 
         wrap_pred_metrics(in_y = fmri_data_sc_studyforrest,
                           decoding = FALSE) %>% 
         select(-preds)
@@ -291,24 +299,24 @@ targets_metrics <- list(
 targets_perms <- list(
   tar_rep(
     name = perms_flynet_sc_studyforrest,
-    command = pls_flynet_sc_studyforrest %>% 
-      select(-fits) %>% 
-      wrap_pred_metrics(in_y = fmri_data_sc_studyforrest,
-                        permute_params = list(n_cycles = 5L)) %>% 
-      select(-preds),
-    batches = n_batches,
-    reps = n_reps_per_batch,
-    storage = "worker",
-    retrieval = "worker"
-  ),
-  tar_rep(
-    name = perms_flynet_sc_studyforrest_by.run.type,
-    command = pls_flynet_sc_studyforrest_by.run.type %>% 
-      select(-fits) %>% 
-      wrap_pred_metrics(in_y = fmri_data_sc_studyforrest,
-                        permute_params = list(n_cycles = 5L),
-                        decoding = FALSE) %>% 
-      select(-preds),
+    command = {
+      permuted_trs <- get_permuted_order(fmri_data_sc_studyforrest, n_cycles = 5L)
+      
+      perms_together <- pls_pred.only_flynet_sc_studyforrest %>% 
+        wrap_pred_metrics(in_y = fmri_data_sc_studyforrest,
+                          permute_order = permuted_trs,
+                          decoding = FALSE) %>% 
+        select(-preds)
+      
+      perms_by_run_type <- pls_pred.only_flynet_sc_studyforrest_by.run.type %>% 
+        wrap_pred_metrics(in_y = fmri_data_sc_studyforrest,
+                          permute_order = permuted_trs,
+                          decoding = FALSE) %>% 
+        select(-preds)
+      
+      tibble(together = list(perms_together),
+             by.run.type = list(perms_by_run_type))
+    },
     batches = n_batches,
     reps = n_reps_per_batch,
     storage = "worker",
@@ -319,7 +327,7 @@ targets_perms <- list(
     command = pls_flynet_sc_nsd %>% 
       select(-fits) %>% 
       wrap_pred_metrics(in_y = fmri_data_sc_nsd,
-                        permute_params = list(n_cycles = 1L)) %>% 
+                        permute_order = list(n_cycles = 1L)) %>% 
       select(-preds),
     batches = n_batches,
     reps = n_reps_per_batch,
