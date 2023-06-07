@@ -95,42 +95,73 @@ get_discrim_preds_from_trained_model <- function (in_workflow_fit, in_recipe, te
   return (out)
 }
 
+get_confusion_regression_coefs <- function (confusions, lm_formulas) {
+  half_confusions <- confusions %>% 
+    halve_confusions()
+  
+  out <- tibble(outcome = names(lm_formulas),
+                lm_formula = lm_formulas) %>% 
+    mutate(coefs = map(lm_formula,
+                       \(x) lm(x, data = half_confusions) %>% 
+                         broom::tidy()
+                       )
+           ) %>% 
+    select(-lm_formula) %>% 
+    unnest(coefs)
+  
+  return (out)
+}
+
+r2 <- function (y, x) sum(y * x)^2 / (sum(y^2) * sum(x^2))
+
+# Note now that this takes STRINGS so that covar_cols can take formula syntax
+calc_partial_r2 <- function(in_data, y_col, x_col, covar_cols) {
+  stopifnot(is.character(y_col), is.character(x_col), is.character(covar_cols))
+  if (length(covar_cols) > 1) {
+    covar_cols <- paste(covar_cols, collapse = "+")
+  }
+  
+  out <- in_data %>% 
+    mutate(resid_y_covar = lm(as.formula(paste(y_col, covar_cols, sep = "~"))) %>% pluck("residuals"),
+           resid_x_covar = lm(as.formula(paste(x_col, covar_cols, sep = "~"))) %>% pluck("residuals")) %>% 
+    summarize(partial_r2 = r2(resid_y_covar, resid_x_covar)) %>% 
+    pull(partial_r2)
+  
+  return (out)
+}
+
+calc_perm_partial_r2 <- function (in_perm, x_col, covar_cols, resid_y_col, resid_x_col, fitted_y_col) {
+  # coming in, currently expect resid_y_col to be permuted
+  stopifnot(is.character(x_col), is.character(covar_cols), is.character(resid_y_col), is.character(resid_x_col), is.character(fitted_y_col))
+  if (length(covar_cols) > 1) {
+    covar_cols <- paste(covar_cols, collapse = "+")
+  }
+  
+  # Uses Freeman & Lane (1983) but as described by Anderson & Robinson (2001)
+  # assumes the residuals have _already_ been calculated on the real data
+  # as these don't need to be calculated on each permutation
+  
+  # To generalize this to multiple covariate columns
+  # My tiny brain can no longer use the derived formula for a single OLS coefficient
+  # Get residualized permuted y from lm(y_perm ~ covar_cols)
+
+  out <- in_perm %>% 
+    # add the permuted y~covar residuals onto the original fitted y~covar values
+    mutate(y_perm = !!sym(fitted_y_col) + !!sym(resid_y_col),
+           # get the residuals of y (permuted) ~ covars (real)
+           resid_y_covar_perm = lm(as.formula(paste("y_perm", covar_cols, sep = "~")), data = .) %>% pluck("residuals")) %>% 
+    summarize(r2_partial_perm = r2(resid_y_covar_perm, !!sym(resid_x_col))) %>%
+    pull(r2_partial_perm)
+  
+  return (out)
+}
+
 ## making confusion matrices from model preds ----
 
-make_full_confusions <- function (preds_flynet, preds_emonet, path_ratings, path_ids_train) {
-  # As silly as this is, I think this would only get called in here,
-  # so I don't see huge utility in externalizing this bit
-  confusions_flynet <- preds_flynet %>% 
-    count(emotion_obs, emotion_pred) %>% 
-    complete(emotion_obs, emotion_pred, fill = list(n = 0L)) %>% 
-    group_by(emotion_obs) %>% 
-    mutate(prob = n / sum(n)) %>% 
-    ungroup()
-  
-   # Especially bc it's not exactly the same for EmoNet
-  confusions_emonet <- preds_emonet %>% 
-    count(emotion_obs, emotion_pred) %>% 
-    complete(emotion_obs, emotion_pred, fill = list(n = 0L)) %>% 
-    # No videos were predicted as empathic pain
-    # so need to do this shit to patch it back in
-    pivot_wider(id_cols = emotion_obs,
-                names_from = emotion_pred,
-                values_from = n) %>% mutate(`Empathic Pain` = 0L) %>% 
-    pivot_longer(cols = -emotion_obs,
-                 names_to = "emotion_pred",
-                 values_to = "n") %>% 
-    group_by(emotion_obs) %>% 
-    mutate(prob = n / sum(n)) %>% 
-    ungroup()
-  
-  rating_means <- read_csv(path_ratings) %>% 
-    select(video = Filename, arousal = arousal...37, valence) %>% 
-    # Keep only the TRAINING videos
-    # so this has the effect of "fitting" a "model" on the training videos
-    inner_join(read_csv(path_ids_train), 
-               by = "video") %>% 
-    group_by(emotion) %>% 
-    summarize(across(c(arousal, valence), mean))
+make_full_confusions <- function (preds_flynet, preds_emonet, dists_ratings) {
+
+  confusions_flynet <- calc_distances_modelprobs(preds_flynet)
+  confusions_emonet <- calc_distances_modelprobs(preds_emonet)
   
   # TODO: For permutation testing these statistics, 
   # each perm iteration should have a confusion matrix calculated from a set 
@@ -138,15 +169,10 @@ make_full_confusions <- function (preds_flynet, preds_emonet, path_ratings, path
   # The same type of permutation being done to estimate class accuracy
   
   out <- confusions_flynet %>% 
-    select(-n) %>% 
-    rename(prob_flynet = prob) %>% 
-    full_join(confusions_emonet %>% 
-                select(-n) %>% 
-                rename(prob_emonet = prob),
-              by = c("emotion_obs", "emotion_pred")) %>% 
-    mutate(dist_flynet = 1 - prob_flynet,
-           dist_emonet = 1 - prob_emonet,
-           fear_only = case_when(
+    full_join(confusions_emonet,
+              by = c("emotion_obs", "emotion_pred"),
+              suffix = c("_flynet", "_emonet")) %>% 
+    mutate(fear_only = case_when(
              emotion_obs == "Fear" & emotion_pred == "Fear" ~ 0L,
              emotion_obs != "Fear" & emotion_pred != "Fear" ~ 0L,
              TRUE ~ 1L
@@ -157,18 +183,93 @@ make_full_confusions <- function (preds_flynet, preds_emonet, path_ratings, path
              TRUE ~ 1L
            )
     ) %>% 
-    # eh yeah paste it on twice for the observed and the predicted...
-    # not glam but I can't think of a more glam option
-    left_join(rating_means %>% rename_with(\(x) paste0(x, "_observed"),
-                                           .cols = -emotion),
-              by = c("emotion_obs" = "emotion")) %>% 
-    left_join(rating_means %>% rename_with(\(x) paste0(x, "_predicted"),
-                                           .cols = -emotion),
-              by = c("emotion_pred" = "emotion")) %>% 
-    mutate(diff_arousal = abs(arousal_observed - arousal_predicted),
-           diff_valence = abs(valence_observed - valence_predicted)) %>% 
+    # left instead of full join to ignore emotion categories not in the EmoNet set
+    left_join(dists_ratings,
+              by = c("emotion_obs", "emotion_pred"))
+  
+  return (out)
+}
+
+calc_confusions <- function (preds) {
+  out <- preds %>% 
+    count(emotion_obs, emotion_pred) %>% 
+    # IMPORTANT!!!
+    # This works for FlyNet AND EmoNet,
+    # even though EmoNet has no instances of empathic pain predicted
+    # ONLY IF the emotion columns are FACTOR
+    # with ALL 20 levels (even if one of the levels is never observed)
+    # AND THEY ARE NOW!!! SO DON'T SWITCH IT BACK
+    complete(emotion_obs, emotion_pred, fill = list(n = 0L)) %>% 
+    group_by(emotion_obs) %>% 
+    mutate(prob = n / sum(n),
+           dist = 1 - prob) %>% 
+    ungroup() %>% 
+    select(-n)
+  
+  return (out)
+}
+
+halve_confusions <- function (confusions) {
+  out <- confusions %>% 
+    # get the bottom half, WITH diagonals, of the matrix
+    mutate(across(starts_with("emotion"), \(x) as.integer(factor(x)))) %>% 
+    filter(emotion_obs <= emotion_pred)
+  
+  return (out)
+}
+
+calc_distances_modelprobs <- function (preds) {
+  out <- preds %>% 
+    pivot_longer(cols = starts_with(".pred"), 
+                 names_to = "emotion", 
+                 values_to = "prob", 
+                 names_prefix = ".pred_") %>% 
+    select(-emotion, -emotion_pred) %>% 
+    chop(prob) %>% 
+    rename(video_obs = video, prob_obs = prob) %>% 
+    mutate(video_pred = video_obs, emotion_pred = emotion_obs, prob_pred = prob_obs) %>% 
+    complete(nesting(video_obs, emotion_obs, prob_obs), 
+             nesting(video_pred, emotion_pred, prob_pred)) %>% 
+    # note that this WILL produce a symmetric correlation matrix
+    mutate(correlation = map2_dbl(prob_obs, prob_pred, \(x, y) cor(x, y, method = "pearson"))) %>% 
+    select(-starts_with("prob")) %>% 
+    filter(video_obs != video_pred) %>% 
+    group_by(emotion_obs, emotion_pred) %>% 
+    summarize(correlation = abs(mean(correlation)), .groups = "drop") %>% 
+    mutate(dist = 1 - correlation) %>% 
+    select(-correlation)
+  
+  return (out)
+}
+
+calc_distances_ratings <- function (path_ratings, path_ids_filter = NULL) {
+  # The target is a path to file so focus on making that the function arg
+  # versus having them each take a df as input
+  out <- read_csv(path_ratings) %>% 
+    select(video = Filename, arousal = arousal...37, valence, fear = Fear)
+  
+  if (!is.null(path_ids_filter)) {
+    out %<>%
+      # for example, keep only the TRAINING videos
+      # so this has the effect of "fitting" a "model" on the training videos
+      inner_join(read_csv(path_ids_filter), 
+                 by = "video")
+  }
+  
+  out %<>% 
+    # first calc the mean rating for each emotion category
+    group_by(emotion) %>% 
+    summarize(across(c(arousal, valence, fear), mean)) %>% 
+    # then copy the cols so we can get category pairwise distances
+    mutate(across(everything(), \(x) x, .names = "{.col}_pred")) %>% 
+    rename_with(\(x) paste0(x, "_obs"), -ends_with("pred")) %>% 
+    complete(nesting(emotion_obs, valence_obs, arousal_obs, fear_obs), 
+             nesting(emotion_pred, valence_pred, arousal_pred, fear_pred)) %>% 
+    mutate(diff_arousal = abs(arousal_obs - arousal_pred),
+           diff_valence = abs(valence_obs - valence_pred),
+           diff_fear = abs(fear_obs - fear_pred)) %>% 
     # keep only the diff cols
-    select(-ends_with("observed"), -ends_with("predicted"))
+    select(starts_with("emotion"), starts_with("diff"))
   
   return (out)
 }
@@ -213,10 +314,10 @@ convert_long_to_dist <- function (distances, row_col, col_col, y_col, flip_dist 
 # This is only for plotting symmetrized distances at the moment
 # It keeps both triangles of the matrix otherwise the triangleyness depends on the ordering of levels
 # which very much is not handled by this
-symmetrize_distances <- function (distances, row_col, col_col, y_col) {
+symmetrize_distances <- function (distances, row_col, col_col, y_cols) {
   row_col <- enquo(row_col)
   col_col <- enquo(col_col)
-  y_col <- enquo(y_col)
+  y_cols <- enquo(y_cols)
   
   out <- distances %>% 
     # First, break the row-column association in preparation for averaging across triangles of the matrix
@@ -226,7 +327,7 @@ symmetrize_distances <- function (distances, row_col, col_col, y_col) {
     unnest_wider(cols) %>% 
     # This stuff actually does the averaging across
     group_by(id1, id2) %>% 
-    mutate(!!y_col := mean(!!y_col)) %>% 
+    mutate(across(!!y_cols, mean)) %>% 
     ungroup() %>% 
     select(-id1, -id2)
   
@@ -242,21 +343,89 @@ symmetrize_distances <- function (distances, row_col, col_col, y_col) {
 # Note that times sets the number of permutation iterations to be run in a single batch
 # and there is no paralleling inside of this function
 # but since it's not re-fitting any models, it's pretty fast and doesn't NEED to be paralleled
-perm_beh_metrics <- function (in_preds, truth_col, estimate_col, times) {
+perm_beh_metrics <- function (in_preds_flynet, in_preds_emonet, truth_col, estimate_col, pred_prefix, path_ratings, path_ids_train, times) {
   truth_col <- enquo(truth_col)
   estimate_col <- enquo(estimate_col)
+  
+  # hold onto it so that we can compare the permuted pred distances
+  # with the valence and arousal distances
+  rating_distances <- calc_distances_ratings(path_ratings, path_ids_train)
+  
   # Per Kragel 2019 paper, this takes finished preds,
   # which effectively keeps the training model the same, without refitting it
-  
-  out <- in_preds %>% 
+  out <- in_preds_flynet %>% 
+    select(-censored) %>% 
+    left_join(in_preds_emonet, by = c("video", "emotion_obs"), suffix = c(".flynet", ".emonet")) %>% 
     # permute the ground truth outcomes before calculating classification "accuracy"
     permutations(permute = !!truth_col, times = times) %>% 
     # needs to be named using tidymodels tune convention to use tune metrics collecting later
-    mutate(.metrics = map(splits, 
+    mutate(.metrics_flynet = map(splits, 
                         \(x) x %>% 
                           analysis() %>% 
-                          accuracy(truth = !!truth_col, estimate = !!estimate_col),
-                          .progress = "permutation! no breathing!"))
+                          select(video, !!truth_col, ends_with(".flynet")) %>% 
+                          rename_with(\(x) str_sub(x, end = -8L), ends_with(".flynet")) %>% 
+                          # this should get us accuracy and multi-class AUC
+                          # from the default tidymodels classification perf metrics
+                          # mind that AUC makes this take measurably longer
+                          # 1 min for 100 iterations vs just a couple seconds before
+                          metrics(truth = !!truth_col, 
+                                  estimate = !!estimate_col, 
+                                  starts_with(pred_prefix)),
+                          .progress = "permuting FlyNet performance"),
+           .metrics_emonet = map(splits, 
+                                 \(x) x %>% 
+                                   analysis() %>% 
+                                   select(video, !!truth_col, ends_with(".emonet")) %>% 
+                                   rename_with(\(x) str_sub(x, end = -8L), ends_with(".emonet")) %>% 
+                                   metrics(truth = !!truth_col, 
+                                           estimate = !!estimate_col, 
+                                           starts_with(pred_prefix)),
+                                 .progress = "permuting EmoNet performance"))
+  
+  return (out)
+}
+
+# IT TAKES THEM AS STRINGS NOW!!!
+perm_confusion_regression_coefs <- function (in_confusions, y_col, x1_col, x2_col, covar_cols = NULL, times) {
+  stopifnot(is.character(y_col), is.character(x1_col), is.character(x2_col))
+  
+  # First: Calculate the relevant values from the _real_ data
+  # so that this only gets done once, not per permutation
+  in_confusions %<>% 
+    halve_confusions() %>% 
+    # Ha! this works
+    mutate(resid_y_x2 = lm(as.formula(paste(y_col, paste(c(x2_col, covar_cols), collapse = "+"), sep = "~"))) %>% pluck("residuals"),
+           fitted_y_x2 = lm(as.formula(paste(y_col, paste(c(x2_col, covar_cols), collapse = "+"), sep = "~"))) %>% pluck("fitted.values"),
+           resid_x1_x2 = lm(as.formula(paste(x1_col, paste(c(x2_col, covar_cols), collapse = "+"), sep = "~"))) %>% pluck("residuals"),
+           resid_y_x1 = lm(as.formula(paste(y_col, paste(c(x1_col, covar_cols), collapse = "+"), sep = "~"))) %>% pluck("residuals"),
+           fitted_y_x1 = lm(as.formula(paste(y_col, paste(c(x1_col, covar_cols), collapse = "+"), sep = "~"))) %>% pluck("fitted.values"),
+           resid_x2_x1 = lm(as.formula(paste(x2_col, paste(c(x1_col, covar_cols), collapse = "+"), sep = "~"))) %>% pluck("residuals"))
+  
+  # Next: permute the relevant outcome-predictor residuals
+  # DO NOT need to permute the actual outcome variable
+  # because the permuted outcome variable will be constructed from the real covariates and the permuted residuals
+  # per Freedman & Lane's (1983) formula via Anderson & Robinson (2001)
+  out <- in_confusions %>% 
+    permutations(permute = c(starts_with("resid_y")), times = times) %>% 
+    # needs to be named using tidymodels tune convention to use tune metrics collecting later
+    mutate(partial.r2_x1 = map_dbl(splits,
+                                \(x) x %>% 
+                                  analysis() %>% 
+                                  calc_perm_partial_r2(x_col = x1_col,
+                                                       covar_cols = c(x2_col, covar_cols), 
+                                                       resid_y_col = "resid_y_x2",
+                                                       resid_x_col = "resid_x1_x2",
+                                                       fitted_y_col = "fitted_y_x2"),
+                                .progress = "permuting confusion regression partial r-squared for x1"),
+           partial.r2_x2 = map_dbl(splits,
+                                   \(x) x %>% 
+                                     analysis() %>% 
+                                     calc_perm_partial_r2(x_col = x2_col,
+                                                          covar_cols = c(x1_col, covar_cols), 
+                                                          resid_y_col = "resid_y_x1",
+                                                          resid_x_col = "resid_x2_x1",
+                                                          fitted_y_col = "fitted_y_x1"),
+                                   .progress = "permuting confusion regression partial r-squared for x2"))
   
   return (out)
 }

@@ -49,7 +49,7 @@ get_permuted_order <- function (in_y, n_cycles) {
 ## fits the models eek ----
 
 # Fit model and extract predicted BOLD for a single iteration of data
-get_pls_preds <- function (in_x, in_y, test_subjs, pls_num_comp = 20L) {
+get_pls_preds <- function (in_x, in_y, test_subjs, pls_num_comp = 20L, include_fit = TRUE) {
   
   in_y %<>%
     mutate(split_type = if_else(subj_num %in% test_subjs, "test", "train"))
@@ -101,9 +101,14 @@ get_pls_preds <- function (in_x, in_y, test_subjs, pls_num_comp = 20L) {
                  names_transform = list(voxel_num = as.integer)) %>% 
     rename(pred = .pred)
   
-  return (list(fit = pls_fit,
-               pred = pred))
+  if (include_fit) {
+    out <- list(fit = pls_fit,
+                pred = pred)
+  } else {
+    out <- list(pred = pred)
+  }
   
+  return (out)
 }
 
 # permute_params = NULL means DO NOT PERMUTE!!!
@@ -307,7 +312,7 @@ prep_xval <- function (in_y, n_folds = NULL, by_run_type = FALSE) {
   return (out)
 }
 
-fit_xval <- function (in_x, in_y, n_folds = NULL, by_run_type = FALSE) {
+fit_xval <- function (in_x, in_y, n_folds = NULL, by_run_type = FALSE, include_fit = TRUE) {
   out <- prep_xval(in_y, n_folds, by_run_type)
   
   if (by_run_type) {
@@ -317,21 +322,30 @@ fit_xval <- function (in_x, in_y, n_folds = NULL, by_run_type = FALSE) {
                                               filter(run_type == y),
                                             in_y = in_y %>% 
                                               filter(run_type == y),
-                                            test_subjs = x),
+                                            test_subjs = x,
+                                            include_fit = include_fit),
                          .progress = "Estimating one xval round"))
   } else {
     out %<>%
       mutate(preds = map(test_subjs,
                          \(x) get_pls_preds(in_x = in_x,
                                             in_y = in_y,
-                                            test_subjs = x),
+                                            test_subjs = x,
+                                            include_fit = include_fit),
                          .progress = "Estimating one xval round"))
   }
+  
+  if (include_fit) {
+    out %<>%
+      # for some reason, unnest_wider doesn't play nice with list-cols of workflow objects
+      # so need to hoist manually twice
+      hoist(preds, "fit") %>% 
+      rename(fits = fit)
+  }
   out %<>%
-    # for some reason, unnest_wider doesn't play nice with list-cols of workflow objects
-    # so need to hoist manually twice
-    hoist(preds, "fit") %>% 
     hoist(preds, "pred") %>% 
-    rename(fits = fit, preds = pred)
+    rename(preds = pred)
+  
+  return (out)
 }
 

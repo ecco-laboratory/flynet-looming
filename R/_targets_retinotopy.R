@@ -189,7 +189,15 @@ targets_pls <- list(
   tar_target(
     name = pls_flynet_v1_studyforrest,
     command = fit_xval(in_x = flynet_activations_convolved_studyforrest,
-                       in_y = fmri_data_v1_studyforrest)
+                       in_y = fmri_data_v1_studyforrest,
+                       include_fit = FALSE)
+  ),
+  tar_target(
+    name = pls_flynet_v1_studyforrest_by.run.type,
+    command = fit_xval(in_x = flynet_activations_convolved_studyforrest,
+                       in_y = fmri_data_v1_studyforrest,
+                       by_run_type = TRUE,
+                       include_fit = FALSE)
   ),
   tar_target(
     name = pls_flynet_sc_nsd,
@@ -199,12 +207,14 @@ targets_pls <- list(
   tar_target(
     name = pls_prf_sc_studyforrest,
     command = fit_xval(in_x = prf_data_sc_studyforrest,
-                       in_y = fmri_data_sc_studyforrest)
+                       in_y = fmri_data_sc_studyforrest,
+                       include_fit = FALSE)
   ),
   tar_target(
     name = pls_prf_v1_studyforrest,
     command = fit_xval(in_x = prf_data_v1_studyforrest,
-                       in_y = fmri_data_v1_studyforrest)
+                       in_y = fmri_data_v1_studyforrest,
+                       include_fit = FALSE)
   )
 )
 
@@ -232,8 +242,19 @@ targets_metrics <- list(
     name = metrics_flynet_v1_studyforrest,
     command = {
       pls_flynet_v1_studyforrest %>% 
-        select(-fits) %>% 
-        wrap_pred_metrics(in_y = fmri_data_v1_studyforrest) %>% 
+        filter(fold_num != 6) %>% 
+        wrap_pred_metrics(in_y = fmri_data_v1_studyforrest,
+                          decoding = FALSE) %>% 
+        select(-preds)
+    }
+  ),
+  tar_target(
+    name = metrics_flynet_v1_studyforrest_by.run.type,
+    command = {
+      pls_flynet_v1_studyforrest_by.run.type %>% 
+        filter(fold_num != 6) %>% 
+        wrap_pred_metrics(in_y = fmri_data_v1_studyforrest,
+                          decoding = FALSE) %>% 
         select(-preds)
     }
   ),
@@ -248,7 +269,6 @@ targets_metrics <- list(
     name = metrics_prf_sc_studyforrest,
     command = {
       pls_prf_sc_studyforrest %>% 
-        select(-fits) %>% 
         wrap_pred_metrics(in_y = fmri_data_sc_studyforrest) %>% 
         select(-preds)
     }
@@ -257,8 +277,10 @@ targets_metrics <- list(
     name = metrics_prf_v1_studyforrest,
     command = {
       pls_prf_v1_studyforrest %>% 
-        select(-fits) %>% 
-        wrap_pred_metrics(in_y = fmri_data_v1_studyforrest) %>% 
+        # this subject is skunked for some reason
+        filter(fold_num != 6) %>% 
+        wrap_pred_metrics(in_y = fmri_data_v1_studyforrest,
+                          decoding = FALSE) %>% 
         select(-preds)
     }
   )
@@ -318,7 +340,10 @@ targets_plots <- list(
     name = boxplot_cv.r_studyforrest,
     command = plot_boxplot_cv_r_studyforrest(metrics_flynet_sc_studyforrest,
                                              metrics_flynet_sc_studyforrest_by.run.type,
-                                             metrics_prf_sc_studyforrest)
+                                             metrics_prf_sc_studyforrest,
+                                             metrics_flynet_v1_studyforrest,
+                                             metrics_flynet_v1_studyforrest_by.run.type,
+                                             metrics_prf_v1_studyforrest)
   )
 )
 
