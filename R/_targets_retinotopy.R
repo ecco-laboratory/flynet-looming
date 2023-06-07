@@ -322,6 +322,37 @@ targets_plots <- list(
   )
 )
 
+targets_figs <- list(
+  tar_target(
+    name = fig_boxplot_cv.r_studyforrest,
+    command = ggsave(here::here("ignore", "figs", "ohbm2023_boxplot_cv.r_studyforrest.png"),
+                     plot = schematic_flynet_activation_timecourse + 
+                       guides(color = "none") + 
+                       scale_color_manual(values = c("#c35413", "#41b6e6")) + 
+                       labs(x = "time", y = "predicted BOLD") + 
+                       theme_bw(base_size = 18) + 
+                       theme(axis.text = element_blank(), plot.background = element_rect(fill = "transparent")),
+                     width = 6,
+                     height = 4,
+                     units = "in"),
+    format = "file"
+  ),
+  tar_target(
+    name = fig_boxplot_cv.r_studyforrest,
+    command = ggsave(here::here("ignore", "figs", "ohbm2023_boxplot_cv.r_studyforrest.png"),
+                     plot = boxplot_cv.r_studyforrest + 
+                       theme_bw(base_size = 14) +
+                       theme(legend.position = 0:1,
+                             legend.justification = 0:1,
+                             legend.background = element_blank(),
+                             legend.title = element_blank(),
+                             plot.background = element_rect(fill = "transparent")),
+                     width = 8,
+                     height = 6,
+                     units = "in"),
+    format = "file"
+  )
+)
 ## the list of all the target metanames ----
 
 c(
@@ -331,5 +362,6 @@ c(
   targets_pls,
   targets_metrics,
   targets_perms,
-  targets_plots
+  targets_plots,
+  targets_figs
 )
