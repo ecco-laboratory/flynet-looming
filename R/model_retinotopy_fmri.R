@@ -116,9 +116,9 @@ get_pls_preds <- function (in_x, in_y, test_subjs, pls_num_comp = 20L, include_f
 # permutation now lives here because we are permuting the held-out testing data
 # and NOT the data going into the model
 # so that we can hold the model constant and not retrain it
-wrap_pred_metrics <- function (df_xval, in_y, permute_params = NULL, decoding = TRUE) {
-  if (!is.null(permute_params)) {
-    permuted_trs <- get_permuted_order(in_y, permute_params$n_cycles)
+wrap_pred_metrics <- function (df_xval, in_groupavg, permute_order = NULL, decoding = TRUE) {
+  if (!is.null(permute_order)) {
+    # permuted_trs <- get_permuted_order(in_y, permute_params$n_cycles)
     # only shuffle the y order (the real BOLD timepoints in the TESTING data)
     df_xval %<>%
       mutate(obs_permuted = map(preds, \(x) x %>% 
@@ -126,7 +126,7 @@ wrap_pred_metrics <- function (df_xval, in_y, permute_params = NULL, decoding = 
                                   # bind on the real-to-permuted TR mappings
                                   # this SHOULD also flexibly handle when the data are split up by run type
                                   # because left_join prioritizes the rows in the (subset) xval data
-                                  left_join(permuted_trs,
+                                  left_join(permute_order,
                                             by = c("run_type",
                                                    "run_num",
                                                    "stim_type",
@@ -149,11 +149,8 @@ wrap_pred_metrics <- function (df_xval, in_y, permute_params = NULL, decoding = 
   out <- df_xval %>% 
     # doing groupavg separately for each xval fold should allow us to exclude
     # the held-out subject from each group-average timeseries
-    mutate(groupavg = map(preds,
-                          \(x) in_y %>% 
-                            filter(subj_num != unique(x$subj_num)) %>% 
-                            calc_groupavg_timeseries()),
-           perf = map2(preds, groupavg,
+    left_join(in_groupavg) %>% 
+    mutate(perf = map2(preds, groupavg,
                       \(x, y) calc_perf(x, groupavg = y), 
                       .progress = "Estimating encoding performance")
     ) %>% 
@@ -175,8 +172,14 @@ wrap_pred_metrics <- function (df_xval, in_y, permute_params = NULL, decoding = 
 
 calc_perf <- function (pred, groupavg) {
   # calculate q-squared and r-squared
-  out <- pred %>% 
-    left_join(groupavg, by = c("run_type", "run_num", "stim_type", "tr_num", "voxel_num")) %>% 
+  if ("run_type" %in% names(groupavg)) {
+    out <- pred %>% 
+      left_join(groupavg, by = c("run_type", "run_num", "stim_type", "tr_num", "voxel_num"))
+  } else {
+    out <- pred %>% 
+      left_join(groupavg, by = c("run_num", "stim_type", "tr_num", "voxel_num"))
+  }
+  out %<>%
     # A SEPARATE METRIC FOR EACH SUBJECT X VOXEL
     # For the one-value-per-subject ones, AVERAGE ACROSS VOXELS
     # Similarly, for the one-value-per-subject ones, AVERAGE ACROSS SUBJECTS

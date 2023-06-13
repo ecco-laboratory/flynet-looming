@@ -20,6 +20,7 @@ tar_option_set(
                "plsmod",
                "tidyverse",
                "magrittr",
+               "RNifti",
                "crayon"), # packages that your targets need to run
   format = "rds" # default storage format
   # Set other options as needed.
@@ -35,11 +36,11 @@ plan(batchtools_slurm,
      template = "future.tmpl",
      resources = list(ntasks = 1L,
                       ncpus = n_slurm_cpus,
-                      # nodelist = "node1",
+                      nodelist = "gpu1",
                       # walltime 86400 for 24h (partition day-long)
                       # walltime 1800 for 30min (partition short)
                       walltime = 86400L,
-                      memory = 4000L,
+                      memory = 16000L,
                       partition = "day-long"))
 # These parameters are relevant later inside the permutation testing targets
 n_batches <- 50
@@ -116,6 +117,21 @@ targets_fmri_data <- list(
       mutate(stim_type = run_type)
   ),
   tar_target(
+    name = groupavgs_fmri_sc_studyforrest,
+    command = {
+      fmri_data <- fmri_data_sc_studyforrest
+      folds <- fmri_data %>% 
+        prep_xval()
+    
+      folds %>% 
+        mutate(groupavg = map(test_subjs,
+                              \(x) fmri_data %>% 
+                                filter(!(subj_num %in% x)) %>% 
+                                calc_groupavg_timeseries(),
+                              .progress = "Calculating group avg timeseries"))
+    }
+  ),
+  tar_target(
     name = fmri_data_v1_studyforrest,
     command = fmri_mat_v1_studyforrest %>% 
       get_phil_matlab_fmri_data_studyforrest() %>% 
@@ -124,6 +140,22 @@ targets_fmri_data <- list(
       mutate(stim_type = run_type) %>% 
       # Just this subject has all 0 data for some reason...
       filter(subj_num != 6) 
+  ),
+  tar_target(
+    name = groupavgs_fmri_v1_studyforrest,
+    command = {
+      fmri_data <- fmri_data_v1_studyforrest
+      folds <- fmri_data %>% 
+        prep_xval() %>% 
+        filter(fold_num != 6)
+      
+      folds %>% 
+        mutate(groupavg = map(test_subjs,
+                              \(x) fmri_data %>% 
+                                filter(!(subj_num %in% x)) %>% 
+                                calc_groupavg_timeseries(),
+                              .progress = "Calculating group avg timeseries"))
+    }
   ),
   tar_target(
     name = fmri_data_sc_nsd,
@@ -233,7 +265,7 @@ targets_metrics <- list(
     name = metrics_flynet_sc_studyforrest,
     command = {
       pls_pred.only_flynet_sc_studyforrest %>% 
-        wrap_pred_metrics(in_y = fmri_data_sc_studyforrest) %>% 
+        wrap_pred_metrics(in_groupavg = groupavgs_fmri_sc_studyforrest) %>% 
         select(-preds)
     }
   ),
@@ -241,7 +273,10 @@ targets_metrics <- list(
     name = metrics_flynet_sc_studyforrest_by.run.type,
     command = {
       pls_pred.only_flynet_sc_studyforrest_by.run.type %>% 
-        wrap_pred_metrics(in_y = fmri_data_sc_studyforrest,
+        rename(run_type = this_run_type) %>% 
+        wrap_pred_metrics(in_groupavg = groupavgs_fmri_sc_studyforrest %>% 
+                            unnest(groupavg) %>% 
+                            nest(groupavg = -c(fold_num, run_type)),
                           decoding = FALSE) %>% 
         select(-preds)
     }
@@ -251,7 +286,7 @@ targets_metrics <- list(
     command = {
       pls_flynet_v1_studyforrest %>% 
         filter(fold_num != 6) %>% 
-        wrap_pred_metrics(in_y = fmri_data_v1_studyforrest,
+        wrap_pred_metrics(in_groupavg = groupavgs_fmri_v1_studyforrest,
                           decoding = FALSE) %>% 
         select(-preds)
     }
@@ -260,8 +295,11 @@ targets_metrics <- list(
     name = metrics_flynet_v1_studyforrest_by.run.type,
     command = {
       pls_flynet_v1_studyforrest_by.run.type %>% 
+        rename(run_type = this_run_type) %>% 
         filter(fold_num != 6) %>% 
-        wrap_pred_metrics(in_y = fmri_data_v1_studyforrest,
+        wrap_pred_metrics(in_groupavg = groupavgs_fmri_v1_studyforrest %>% 
+                            unnest(groupavg) %>% 
+                            nest(groupavg = -c(fold_num, run_type)),
                           decoding = FALSE) %>% 
         select(-preds)
     }
@@ -277,7 +315,7 @@ targets_metrics <- list(
     name = metrics_prf_sc_studyforrest,
     command = {
       pls_prf_sc_studyforrest %>% 
-        wrap_pred_metrics(in_y = fmri_data_sc_studyforrest) %>% 
+        wrap_pred_metrics(in_groupavg = groupavgs_fmri_sc_studyforrest) %>% 
         select(-preds)
     }
   ),
@@ -287,7 +325,7 @@ targets_metrics <- list(
       pls_prf_v1_studyforrest %>% 
         # this subject is skunked for some reason
         filter(fold_num != 6) %>% 
-        wrap_pred_metrics(in_y = fmri_data_v1_studyforrest,
+        wrap_pred_metrics(in_groupavg = groupavgs_fmri_v1_studyforrest,
                           decoding = FALSE) %>% 
         select(-preds)
     }
@@ -303,13 +341,16 @@ targets_perms <- list(
       permuted_trs <- get_permuted_order(fmri_data_sc_studyforrest, n_cycles = 5L)
       
       perms_together <- pls_pred.only_flynet_sc_studyforrest %>% 
-        wrap_pred_metrics(in_y = fmri_data_sc_studyforrest,
+        wrap_pred_metrics(in_groupavg = groupavgs_fmri_sc_studyforrest,
                           permute_order = permuted_trs,
                           decoding = FALSE) %>% 
         select(-preds)
       
       perms_by_run_type <- pls_pred.only_flynet_sc_studyforrest_by.run.type %>% 
-        wrap_pred_metrics(in_y = fmri_data_sc_studyforrest,
+        rename(run_type = this_run_type) %>% 
+        wrap_pred_metrics(in_groupavg = groupavgs_fmri_sc_studyforrest %>% 
+                            unnest(groupavg) %>% 
+                            nest(groupavg = -c(fold_num, run_type)),
                           permute_order = permuted_trs,
                           decoding = FALSE) %>% 
         select(-preds)
@@ -357,8 +398,8 @@ targets_plots <- list(
 
 targets_figs <- list(
   tar_target(
-    name = fig_boxplot_cv.r_studyforrest,
-    command = ggsave(here::here("ignore", "figs", "ohbm2023_boxplot_cv.r_studyforrest.png"),
+    name = fig_schematic_flynet_activation,
+    command = ggsave(here::here("ignore", "figs", "ohbm2023_schematic_flynet_activation.png"),
                      plot = schematic_flynet_activation_timecourse + 
                        guides(color = "none") + 
                        scale_color_manual(values = c("#c35413", "#41b6e6")) + 
@@ -386,6 +427,34 @@ targets_figs <- list(
     format = "file"
   )
 )
+
+targets_niftis <- list(
+  tar_target(
+    name = nifti.mask_sc,
+    command = readNifti("/home/data/eccolab/studyforrest-data-phase2/SC_mask_vox_indx.nii")
+  ),
+  tar_target(
+    name = voxel.coords_sc,
+    command = which(nifti.mask_sc != 0, arr.ind = TRUE) %>% 
+      as_tibble() %>% 
+      rename(x = dim1, y = dim2, z = dim3) %>% 
+      mutate(voxel_num = 1:n()) %>% 
+      mutate(side = if_else(x <= 39, "right", "left"))
+  ),
+  tar_target(
+    name = statmap_r_flynet_sc_ring.expand,
+    command = {
+      voxels <- metrics_flynet_sc_studyforrest_by.run.type %>% 
+        filter(this_run_type == "ring_expand") %>% 
+        preplot_voxels_model_r(voxel_coords = voxel.coords_sc)
+      
+      write_statmap_nifti(metric_voxels = voxels,
+                          nifti_mask = nifti.mask_sc,
+                          out_path = "/home/data/eccolab/studyforrest-data-phase2/SC_pls_r_ring_expand_flynet.nii")
+    },
+    format = "file"
+  )
+)
 ## the list of all the target metanames ----
 
 c(
@@ -396,5 +465,6 @@ c(
   targets_metrics,
   targets_perms,
   targets_plots,
-  targets_figs
+  targets_figs,
+  targets_niftis
 )
