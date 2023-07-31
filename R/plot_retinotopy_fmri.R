@@ -98,7 +98,7 @@ write_statmap_nifti <- function (metric_voxels, nifti_mask, out_path) {
   for (voxel in 1:nrow(metric_voxels)) {
     this_row <- metric_voxels %>% 
       slice(voxel)
-    nifti_mask[this_row$x, this_row$y, this_row$z] <- this_row$r_model
+      nifti_mask[this_row$x, this_row$y, this_row$z] <- this_row$r_model
   }
   
   RNifti::writeNifti(nifti_mask, out_path)
@@ -136,5 +136,17 @@ write_statmap_nifti <- function (metric_voxels, nifti_mask, out_path) {
     }
     RNifti::writeNifti(this_mask, glue::glue(this_mask_path))
   }
+  }
+
+# a la Genovese, Lazar, & Nichols (2002)
+fdr_correct <- function (metric_voxels, q = .05) {
+  constant <- sum(1/1:length(metric_voxels))
+  
+  out <- metric_voxels %>% 
+    arrange(pval) %>% 
+    mutate(pval_num = 1:n(),
+           q_cutoff = (pval_num/n()) * (q/constant))
+  
+  return (out)
 }
 
