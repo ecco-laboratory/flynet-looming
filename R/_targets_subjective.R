@@ -54,6 +54,7 @@ n_reps_per_batch <- 200
 
 # Run the R scripts in the R/ folder with your custom functions:
 tar_source(c("R/model_flynet_affect.R",
+             "R/model_partial_r.R",
              "R/plot_helpers.R"
 ))
 
@@ -342,30 +343,35 @@ target_perms.metrics_bothnets_ckvids <- tar_rep(
 target_perms.partial.r2_bothnets_ckvids <- tar_rep(
   name = perms.partial.r2_bothnets_ckvids,
   command = {
-    valence <- perm_confusion_regression_coefs(in_confusions = confusions_ckvids,
-                                            y_col = "diff_valence",
-                                            x1_col = "dist_flynet",
-                                            x2_col = "dist_emonet",
-                                            times = n_reps_per_batch * 10)
+    valence <- confusions_ckvids %>% 
+      halve_confusions() %>% 
+      perm_partial_r2(y_col = "diff_valence",
+                      x1_col = "dist_flynet",
+                      x2_col = "dist_emonet",
+                      times = n_reps_per_batch * 10)
     
-    arousal <- perm_confusion_regression_coefs(in_confusions = confusions_ckvids,
-                                               y_col = "diff_arousal",
-                                               x1_col = "dist_flynet",
-                                               x2_col = "dist_emonet",
-                                               times = n_reps_per_batch * 10)
+    arousal <- confusions_ckvids %>% 
+      halve_confusions() %>%
+      perm_partial_r2(y_col = "diff_arousal",
+                      x1_col = "dist_flynet",
+                      x2_col = "dist_emonet",
+                      times = n_reps_per_batch * 10)
     
-    fear <- perm_confusion_regression_coefs(in_confusions = confusions_ckvids,
-                                               y_col = "diff_fear",
-                                               x1_col = "dist_flynet",
-                                               x2_col = "dist_emonet",
-                                               times = n_reps_per_batch * 10)
+    fear <- confusions_ckvids %>% 
+      halve_confusions() %>%
+      perm_partial_r2(y_col = "diff_fear",
+                      x1_col = "dist_flynet",
+                      x2_col = "dist_emonet",
+                      times = n_reps_per_batch * 10)
     
-    fear_no_arousal <- perm_confusion_regression_coefs(in_confusions = confusions_ckvids,
-                                            y_col = "diff_fear",
-                                            x1_col = "dist_flynet",
-                                            x2_col = "dist_emonet",
-                                            covar_cols = "diff_arousal",
-                                            times = n_reps_per_batch * 10)
+    fear_no_arousal <- confusions_ckvids %>% 
+      halve_confusions() %>%
+      perm_partial_r2(y_col = "diff_fear",
+                      x1_col = "dist_flynet",
+                      x2_col = "dist_emonet",
+                      covar_cols = "diff_arousal",
+                      times = n_reps_per_batch * 10)
+    
     bind_rows(valence = valence,
               arousal = arousal,
               fear = fear,
