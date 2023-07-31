@@ -3,7 +3,7 @@ title: "Cowen & Keltner flow exploration"
 format: html
 ---
 
-```{r}
+```{r setup}
 #| include: false
 
 require(tidymodels)
@@ -11,10 +11,20 @@ require(tidyverse)
 require(magrittr)
 require(rlang)
 
+source(here::here("R", "model_flynet_affect.R"))
 source(here::here("R", "plot_helpers.R"))
 
 ratings <- read_csv(targets::tar_read(ratings_ck2017,
                                       store = here::here("ignore", "_targets", "subjective")))
+
+rating_means <- ratings %>% 
+    select(video = Filename, arousal = arousal...37, valence, fear = Fear) %>% 
+    # Keep only the TRAINING videos
+    # so this has the effect of "fitting" a "model" on the training videos
+    inner_join(read_csv(targets::tar_read(ids.train_kragel2019, store = here::here("ignore", "_targets", "subjective"))), 
+               by = "video") %>% 
+    group_by(emotion) %>% 
+    summarize(across(c(arousal, valence, fear), mean))
 
 split_data <- targets::tar_read(rsplit_flynet_ckvids,
                                 store = here::here("ignore", "_targets", "subjective"))
@@ -22,18 +32,47 @@ split_data <- targets::tar_read(rsplit_flynet_ckvids,
 flynet_preds <- targets::tar_read(preds_flynet_ckvids,
                                   store = here::here("ignore", "_targets", "subjective"))
 
-flynet_perms <- targets::tar_read(perms_flynet_ckvids,
-                                  store = here::here("ignore", "_targets", "subjective"))
 
-emonet_activations_fc7 <- read_csv(targets::tar_read(activations_emonet.fc7_ckvids,
-                                      store = here::here("ignore", "_targets", "subjective")))
+
+# emonet_activations_fc7 <- read_csv(targets::tar_read(activations_emonet.fc7_ckvids,
+#                                       store = here::here("ignore", "_targets", "subjective")))
 
 emonet_preds <- targets::tar_read(preds.videowise_emonet_ckvids,
                                   store = here::here("ignore", "_targets", "subjective"))
 
-emonet_perms <- targets::tar_read(perms_emonet_ckvids,
+rating_net_coefs <- targets::tar_read(coefs.confusions_bothnets_ckvids,
                                   store = here::here("ignore", "_targets", "subjective"))
+
+rating_net_partial.r2 <- targets::tar_read(partial.r2.confusions_bothnets_ckvids,
+                                  store = here::here("ignore", "_targets", "subjective"))
+
+perms_model.acc <- targets::tar_read(perms_bothnets_ckvids,
+                                  store = here::here("ignore", "_targets", "subjective"))
+
+confusion_premodel <- targets::tar_read(confusions_ckvids,
+                               store = here::here("ignore", "_targets", "subjective"))
+
+perms_partial.r2 <- targets::tar_read(perms.partial.r2_bothnets_ckvids,
+                                                store = here::here("ignore", "_targets", "subjective")) %>% 
+  select(-splits) %>% 
+  pivot_longer(cols = starts_with("partial.r2"), 
+               names_to = "term", 
+               values_to = "partial.r2", 
+               names_prefix = "partial.r2_") %>% 
+  mutate(term = paste0("dist_", term))
+
+pcor <- function(x, y, covar) {
   
+  resid_y_covar <- lm(y ~ covar) %>% 
+    pluck("residuals")
+  
+  resid_x_covar <- lm(x ~ covar) %>% 
+    pluck("residuals")
+  
+  out <- sum(resid_y_covar * resid_x_covar) / (sqrt(sum(resid_y_covar^2)) * sqrt(sum(resid_x_covar^2)))
+  
+  return (out)
+}
 ```
 
 ```{r sample-plot-slopes-0564}
@@ -121,10 +160,53 @@ bind_rows(flynet = flynet_preds,
         legend.background = element_blank())
 ```
 
+```{r temp-calc-alternate-dists}
+emonet_confusions <- calc_confusions(emonet_preds)
+flynet_confusions <- calc_confusions(flynet_preds)
+```
+
+```{r}
+emonet_confusions %>% 
+  symmetrize_distances(emotion_obs, emotion_pred, c("prob", "dist")) %>% 
+  left_join(confusion_premodel, by = c("emotion_obs", "emotion_pred")) %>% 
+  mutate(across(starts_with("emotion"), \(x) as.integer(factor(x)))) %>% 
+  filter(emotion_obs < emotion_pred) %>% 
+  ggplot(aes(x = diff_arousal, y = dist)) + 
+  geom_point() + 
+  geom_smooth(method = "lm")
+```
+```{r}
+emonet_confusions %>% 
+  symmetrize_distances(emotion_obs, emotion_pred, c("prob", "dist")) %>% 
+  left_join(confusion_premodel, by = c("emotion_obs", "emotion_pred")) %>% 
+  mutate(across(starts_with("emotion"), \(x) as.integer(factor(x)))) %>% 
+  filter(emotion_obs <= emotion_pred) %>% 
+  ggplot(aes(x = diff_arousal, y = dist)) + 
+  geom_point() + 
+  geom_smooth(method = "lm")
+```
+
+```{r}
+emonet_confusions %>% 
+  symmetrize_distances(emotion_obs, emotion_pred, c("prob", "dist")) %>% 
+  left_join(confusion_premodel, by = c("emotion_obs", "emotion_pred")) %>% 
+  ggplot(aes(x = diff_arousal, y = dist)) + 
+  geom_point() + 
+  geom_smooth(method = "lm")
+```
+
+```{r}
+emonet_confusions %>% 
+  left_join(confusion_premodel, by = c("emotion_obs", "emotion_pred")) %>% 
+  ggplot(aes(x = diff_arousal, y = dist)) + 
+  geom_point() + 
+  geom_smooth(method = "lm")
+```
+
 ```{r make-hclust}
 # This function exists because I don't actually like how ggcorrplot does things.
 # It fucking flips the rows and cols from the matrix to the graph!
-get_hclust_order <- function (distances, row_col, col_col, y_col, flip_dist = TRUE) {
+convert_long_to_dist <- function (distances, row_col, col_col, y_col, flip_dist = TRUE) {
   row_col <- enquo(row_col)
   col_col <- enquo(col_col)
   y_col <- enquo(y_col)
@@ -134,12 +216,12 @@ get_hclust_order <- function (distances, row_col, col_col, y_col, flip_dist = TR
   # If the input was ALREADY symmetrical,
   # this should only have the effect of turning it into a half/triangle matrix
   # Either way, that half matrix is what as.dist() can coerce to a distance object
-
+  
   pre_dist <- distances %>% 
     # First, break the row-column association in preparation for averaging across triangles of the matrix
     mutate(across(c(!!row_col, !!col_col), as.character), 
            cols = map2(!!row_col, !!col_col,
-                           \(x, y) set_names(sort(c(x, y)), nm = c("id1", "id2")))) %>%
+                       \(x, y) set_names(sort(c(x, y)), nm = c("id1", "id2")))) %>%
     unnest_wider(cols) %>% 
     # This stuff actually does the averaging across
     group_by(id1, id2) %>% 
@@ -151,12 +233,19 @@ get_hclust_order <- function (distances, row_col, col_col, y_col, flip_dist = TR
       mutate(y = 1 - y)
   }
   
-  hclust_result <- pre_dist %>% 
+  out <- pre_dist %>% 
     pivot_wider(id_cols = id2, names_from = id1, values_from = y) %>%
     column_to_rownames("id2") %>% 
     # This assumes the diagonal dissimilarity is 0, which is most definitely not true...
-    as.dist(diag = TRUE) %>% 
-    hclust(method = "ward.D")
+    as.dist(diag = TRUE)
+  
+  return (out)
+}
+
+get_hclust_order <- function (dist, method = "ward.D") {
+  
+  hclust_result <- dist %>% 
+    hclust(method = method)
   
   # suitable for putting into the levels arg of factor()
   return (hclust_result$labels[hclust_result$order])
@@ -165,8 +254,6 @@ get_hclust_order <- function (distances, row_col, col_col, y_col, flip_dist = TR
 
 
 ```{r plot-emonet-confusion-matrix}
-confusion_premodel <- tar_read(confusions_ckvids,
-                               store = here::here("ignore", "_targets", "subjective"))
 kragel2019_emotion_hclust_order <- c("Aesthetic Appreciation",
                                      "Entrancement",
                                      "Interest",
@@ -191,34 +278,48 @@ kragel2019_emotion_hclust_order <- c("Aesthetic Appreciation",
 confusion_premodel %>% 
   plot_confusion_matrix(row_col = emotion_obs,
                         col_col = emotion_pred,
-                        fill_col = prob_emonet,
+                        fill_col = dist_emonet,
                         level_order = kragel2019_emotion_hclust_order) +
-  scale_fill_viridis_c() +
+  scale_fill_viridis_c(direction = -1) +
   labs(title = "EmoNet confusion matrix")
 ```
 
 ```{r plot-flynet-confusion-matrix}
-flynet_hclust_order <- get_hclust_order(distances = flynet_confusion_preplot,
-                                        row_col = emotion_obs,
-                                        col_col = emotion_pred,
-                                        y_col = prob)
+flynet_hclust_order <- convert_long_to_dist(distances = confusion_premodel,
+                                            row_col = emotion_obs,
+                                            col_col = emotion_pred,
+                                            y_col = dist_flynet,
+                                            flip_dist = FALSE) %>% 
+  get_hclust_order()
 
-flynet_confusion_preplot %>% 
-  symmetrize_distances(row_col = emotion_obs, col_col = emotion_pred, y_col = prob) %>% 
-  # mutate(across(starts_with("emotion"), \(x) factor(x, levels = flynet_hclust_order))) %>% 
-  ggplot(aes(x = emotion_pred, y = fct_rev(emotion_obs))) + 
-  geom_raster(aes(fill = prob)) + 
-  scale_fill_viridis_c() +
-  guides(x = guide_axis(angle = 45)) +
+confusion_premodel %>% 
+  plot_confusion_matrix(row_col = emotion_obs,
+                        col_col = emotion_pred,
+                        fill_col = dist_flynet,
+                        level_order = flynet_hclust_order) +
+  scale_fill_viridis_c(direction = -1) +
   labs(title = "FlyNet confusion matrix")
 ```
 
+```{r}
+flynet_confusions %>% 
+  symmetrize_distances(emotion_obs, emotion_pred, "dist") %>% 
+  plot_confusion_matrix(row_col = emotion_obs,
+                        col_col = emotion_pred,
+                        fill_col = dist,
+                        level_order = flynet_hclust_order) +
+  scale_fill_viridis_c(direction = -1) +
+  labs(title = "FlyNet confusion matrix")
+```
+
+
 ```{r plot-valence-confusion-matrix}
-valence_hclust_order <- get_hclust_order(distances = confusion_premodel,
+valence_hclust_order <- convert_long_to_dist(distances = confusion_premodel,
                                         row_col = emotion_obs,
                                         col_col = emotion_pred,
                                         y_col = diff_valence,
-                                        flip_dist = FALSE)
+                                        flip_dist = FALSE) %>% 
+  get_hclust_order()
 
 confusion_premodel %>% 
   plot_confusion_matrix(row_col = emotion_obs,
@@ -230,11 +331,12 @@ confusion_premodel %>%
 ```
 
 ```{r plot-arousal-confusion-matrix}
-arousal_hclust_order <- get_hclust_order(distances = confusion_premodel,
+arousal_hclust_order <- convert_long_to_dist(distances = confusion_premodel,
                                         row_col = emotion_obs,
                                         col_col = emotion_pred,
                                         y_col = diff_arousal,
-                                        flip_dist = FALSE)
+                                        flip_dist = FALSE) %>% 
+  get_hclust_order()
 
 confusion_premodel %>% 
   plot_confusion_matrix(row_col = emotion_obs,
@@ -243,6 +345,56 @@ confusion_premodel %>%
                         level_order = arousal_hclust_order) +
   scale_fill_viridis_c(direction = -1) +
   labs(title = "Arousal difference matrix")
+```
+
+```{r plot-raw-valence-arousal}
+rating_means %>% 
+  filter(emotion %in% levels(flynet_preds$emotion_obs)) %>% 
+  ggplot(aes(x = valence, y = arousal)) +
+  geom_label(aes(label = emotion, color = arousal)) +
+  scale_color_viridis_c()
+```
+
+
+```{r plot-mds-all}
+
+matrix_rating_means <- rating_means %>% 
+  filter(emotion %in% levels(flynet_preds$emotion_obs)) %>% 
+  select(-emotion) %>% 
+  as.matrix() %>% 
+  scale()
+list(emonet = convert_long_to_dist(distances = confusion_premodel,
+                                   row_col = emotion_obs,
+                                   col_col = emotion_pred,
+                                   y_col = dist_emonet,
+                                   flip_dist = FALSE),
+     flynet = convert_long_to_dist(distances = confusion_premodel,
+                                   row_col = emotion_obs,
+                                   col_col = emotion_pred,
+                                   y_col = dist_flynet,
+                                   flip_dist = FALSE)) %>% 
+  map(\(x) x %>% 
+        MASS::isoMDS(y = matrix_rating_means) %>% 
+        pluck("points") %>% 
+        set_colnames(c("x", "y")) %>% 
+        as_tibble(rownames = "emotion")) %>%
+  bind_rows(.id = "model_type") %>% 
+  left_join(rating_means, by = "emotion") %>% 
+  ggplot(aes(x = x, y = y)) + 
+  geom_text(aes(label = emotion, color = arousal)) +
+  scale_color_viridis_c() +
+  facet_grid(~ model_type)
+
+```
+
+```{r rating-by-net-distance-perm-results}
+perms_partial.r2 %>% 
+  left_join(rating_net_partial.r2, by = c("outcome", "term"), suffix = c("_perm", "")) %>% 
+  group_by(outcome, term) %>% 
+  summarize(partial.r2 = mean(partial.r2), 
+            pval = (sum(partial.r2_perm > partial.r2) + 1) / (n() + 1),
+            .groups = "drop") %>% 
+  mutate(partial.r.abs = sqrt(partial.r2))
 ```
 
 ```{r}
@@ -259,12 +411,29 @@ confusion_premodel %>%
 
 ```{r}
 confusion_premodel %>% 
-  lm(dist_emonet ~ valence_diff + arousal_diff, data = .) %>% 
+  mutate(across(starts_with("emotion"), \(x) as.integer(factor(x)))) %>% 
+  filter(emotion_obs <= emotion_pred) %>%
+  lm(dist_emonet ~ diff_valence + diff_arousal, data = .) %>% 
   summary()
 ```
 
 ```{r}
 confusion_premodel %>% 
-  lm(dist_flynet ~ valence_diff + arousal_diff, data = .) %>% 
+  mutate(across(starts_with("emotion"), \(x) as.integer(factor(x)))) %>% 
+  filter(emotion_obs <= emotion_pred) %>%
+  lm(dist_flynet ~ diff_valence + diff_arousal, data = .) %>% 
   summary()
 ```
+
+```{r pure-amusement-lm}
+confusion_premodel %>% 
+  symmetrize_distances(row_col = emotion_obs, 
+                       col_col = emotion_pred, 
+                       y_cols = c("prob_flynet", "prob_emonet")) %>% 
+  mutate(across(starts_with("emotion"), \(x) as.integer(factor(x)))) %>% 
+  filter(emotion_obs < emotion_pred) %>% 
+  mutate(dist_amusement = if_else(emotion_obs == 3 | emotion_pred == 3, 0.5, 1)) %>% 
+  lm(dist_emonet ~ dist_amusement + diff_valence + diff_arousal, data = .) %>% 
+  summary()
+```
+
