@@ -407,7 +407,7 @@ targets_figs <- list(
                        theme_bw(base_size = 18) + 
                        theme(axis.text = element_blank(), plot.background = element_rect(fill = "transparent")),
                      width = 6,
-                     height = 4,
+                     height = 2.5,
                      units = "in"),
     format = "file"
   ),
