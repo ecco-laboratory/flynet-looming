@@ -24,6 +24,7 @@ log.file = fs::path_expand(log.file)
 
 #SBATCH --account=default
 <%= if (!is.null(resources$nodelist)) sprintf(paste0("#SBATCH --nodelist='", resources$nodelist, "'")) %>
+<%= if (!is.null(resources$exclude)) sprintf(paste0("#SBATCH --exclude='", resources$exclude, "'")) %>
 #SBATCH --job-name=<%= job.name %>
 #SBATCH --output=<%= log.file %>
 #SBATCH --error=<%= log.file %>

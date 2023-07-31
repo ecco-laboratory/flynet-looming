@@ -20,7 +20,7 @@ else:
 # Need to set repo path because I suspect
 # when slurm runs this it doesn't immediately know what is up
 repo_path = '/home/mthieu/Repos/emonet-py/'
-stimuli_path = os.path.join(repo_path, 'ignore', 'stimuli', 'looming_homemade')
+# stimuli_path = os.path.join(repo_path, 'ignore', 'stimuli', 'looming_homemade')
 
 # %%
 # Argle parser
@@ -30,9 +30,26 @@ parser = ArgumentParser(
     formatter_class=ArgumentDefaultsHelpFormatter
 )
 parser.add_argument(
-    '--file',
+    '--infile',
     type=str,
-    help="Source image name (in the looming folder) with file ending"
+    help="Path to source image"
+)
+parser.add_argument(
+    '--outpath',
+    type=str,
+    help="Path to destination video FOLDER, EXCLUDING filename (will be auto-generated)"
+)
+parser.add_argument(
+    '--diststart',
+    default=18,
+    type=float,
+    help="Distance that object should START AT, in object-widths"
+)
+parser.add_argument(
+    '--distend',
+    default=0,
+    type=float,
+    help="Distance that object should END AT, in object-widths"
 )
 parser.add_argument(
     '--direction',
@@ -66,11 +83,20 @@ parser.add_argument(
     nargs=2,
     help="Output video frame size, as 2 pixel values (width, then height)"
 )
+parser.add_argument(
+    '--fps',
+    default=25,
+    type=int,
+    help="Frames per second of output video"
+)
 args = vars(parser.parse_args())
 
 # %%
 # Helper functions for the loom resizer
 def scale_image_by_viewing_distance(image, diameter_initial, distance_initial, distance_current):
+    # per Sun and Frost 1998 appendix (THANK GOD),
+    # theta_t = 2 * arctan(diameter_initial / (2 * distance_t))
+
     # first calculate theta using the fake distance of the looming object
     theta = 2 * np.arctan2(diameter_initial / 2, distance_current)
     # then calculate the drawn diameter reapplying theta back to the screen distance
@@ -111,73 +137,70 @@ def fit_image_to_frame(image, frame_size):
     return image
 # %%
 # Testing out img reading and resizing stuff
-img = Image.open(os.path.join(stimuli_path, 'images', args['file']))
+img = Image.open(args['infile'])
 # turn every transparent pixel to fully opaque
 # leaves the actual object intact but turns the background to black
 img.putalpha(255)
 # and then toss the alpha channel
 img = img.convert('RGB')
 # Assume constant velocity approaching object
-# TODO:
-# 1. Compose framewise function that outputs object diameter as a function of velocity
-# 2. Loop that function over frames
-# 3. Write those frames as a video
-
-# per Sun and Frost 1998 appendix (THANK GOD),
-# theta_t = 2 * arctan(diameter_initial / (2 * distance_t))
-# use this to calculate theta_t on every frame
-# then re-project the on-screen diameter 
-# using theta_t and the STARTING (viewing) distance
 
 # if 25 fps, each frame is 40 ms
 diameter_initial = args['objwidth'] # in px, basically arbitrary bc this would be "real world" obj size
-distance_initial = diameter_initial * 18 # 18 obj-widths away from screen? sure
-duration_start_sec = args['pausetime'] # in seconds
+distance_initial = diameter_initial * args['diststart'] # Default 18 obj-widths away from screen? sure
+distance_final = diameter_initial * args['distend'] # default 0 obj-widths, or "full collision"
+direction = args['direction']
+duration_wait_sec = args['pausetime'] # in seconds
 duration_loom_sec = args['loomtime'] # in seconds
-fps = 25
-duration_start_frames = np.floor(duration_start_sec * fps).astype(int)
+fps = args['fps']
+duration_wait_frames = np.floor(duration_wait_sec * fps).astype(int)
 # use ceil for looming duration to round up and get the image "closer" to viewer
 duration_loom_frames = np.ceil(duration_loom_sec * fps).astype(int)
 # velocity in px/frame, weird units but I think it will work for now
 # assuming very-near collision occurs at the end of the video duration
 # the arbitrary looking adjustment is to get it so distance is never 0
 # because that causes PIL to overflow when attempting to resize the image to some HUGE size
-velocity = (distance_initial-10) / (duration_loom_frames-1)
+velocity = ((distance_initial-distance_final)-10) / (duration_loom_frames-1)
 # default is literally the monitor size in my office, just for testing
 screen_size = tuple(args['framesize'])
 
-# START the frames with the 'first' static image
-if duration_start_frames > 0:
-    frames = [fit_image_to_frame(ImageOps.scale(img, diameter_initial / img.width), screen_size)] * duration_start_frames
-else:
-    frames = []
+# Initialize the frames as empty first
+frames = []
 
+# Generate the actual motion sequence
 for frame in trange(duration_loom_frames, desc='Expanding images to loom'):
     # current distance = initial distance - distance traveled since then
     distance = distance_initial - velocity*frame
     this_img = scale_image_by_viewing_distance(img, diameter_initial, distance_initial, distance)
     this_img = fit_image_to_frame(this_img, screen_size)
     frames.append(this_img)
+
+# Put my thang down flip it and reverse it
+if direction == 'receding':
+    frames.reverse()
+
+# Put the waiting frames on
+# This way it always waits at the beginning of the video itself
+# So for receding videos it waits at the close-up
+if duration_wait_frames > 0:
+    wait_frames = [frames[0]] * duration_wait_frames
+    frames = wait_frames + frames
 # %%
 # export frames as video he he he
 # https://theailearner.com/2018/10/15/creating-video-from-images-using-opencv-python/
 video_name = [
-    os.path.splitext(
-    args['file'])[0], 
-    args['direction'], 
+    os.path.splitext(os.path.split(args['infile'])[1])[0], 
+    direction, 
     'pause' + '{:02.1f}'.format(args['pausetime']), 
     'loom' + '{:02.1f}'.format(args['loomtime'])
 ]
 video_name = '_'.join(video_name) + '.mp4'
 container = cv2.VideoWriter(
-    os.path.join(stimuli_path, 'videos', video_name),
+    os.path.join(args['outpath'], video_name),
     cv2.VideoWriter_fourcc(*'mp4v'),
     fps,
     screen_size
 )
-
-if args['direction'] == 'receding':
-    frames.reverse()
 
 for frame in trange(len(frames), desc='Writing frames to video'):
     # flip from RGB to BGR. So STUPID

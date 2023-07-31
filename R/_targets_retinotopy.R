@@ -36,15 +36,16 @@ plan(batchtools_slurm,
      template = "future.tmpl",
      resources = list(ntasks = 1L,
                       ncpus = n_slurm_cpus,
-                      nodelist = "gpu1",
+                      # nodelist = "node1",
+                      exclude = "gpu2",
                       # walltime 86400 for 24h (partition day-long)
                       # walltime 1800 for 30min (partition short)
                       walltime = 86400L,
                       memory = 16000L,
                       partition = "day-long"))
 # These parameters are relevant later inside the permutation testing targets
-n_batches <- 50
-n_reps_per_batch <- 20
+n_batches <- 100
+n_reps_per_batch <- 50
 
 # Run the R scripts in the R/ folder with your custom functions:
 tar_source(c("R/get_flynet_activation_timecourses.R",
@@ -377,6 +378,80 @@ targets_perms <- list(
   )
 )
 
+targets_perm_results <- list(
+  tar_target(
+    name = perm.pvals_flynet_sc_studyforrest,
+    command = {
+      r_together <- metrics_flynet_sc_studyforrest %>% 
+        select(fold_num, perf) %>% 
+        unnest(perf) %>% 
+        group_by(stim_type, subj_num) %>% 
+        summarize(r_model = mean(r_model), .groups = "drop")
+      
+      r_by.run.type <- metrics_flynet_sc_studyforrest_by.run.type %>% 
+        select(fold_num, perf) %>% 
+        unnest(perf) %>% 
+        group_by(stim_type, subj_num) %>% 
+        summarize(r_model = mean(r_model), .groups = "drop")
+      
+      r_joined <- full_join(r_together,
+                            r_by.run.type,
+                            by = c("stim_type", "subj_num"),
+                            suffix = c("_together", "_by.run.type")) %>% 
+        mutate(r_model_diff = r_model_by.run.type - r_model_together)
+      
+      perms_flynet_sc_studyforrest %>% 
+        # pre-unnest to get them to line up together
+        mutate(together = map(together,
+                              \(x) x %>% 
+                                select(-test_subjs) %>%
+                                unnest(perf)),
+               by.run.type = map(by.run.type,
+                                 \(x) x %>%
+                                   select(-test_subjs) %>%
+                                   unnest(perf))) %>% 
+        mutate(joined = map2(together, by.run.type,
+                             \(x, y) full_join(x, y,
+                                               by = c("fold_num", "stim_type", "subj_num", "voxel_num"),
+                                               suffix = c("_together", "_by.run.type")))) %>%
+        select(tar_batch, tar_rep, joined) %>%
+        unnest(joined) %>% 
+        # calculate the permuted difference in predicted-actual BOLD R
+        select(starts_with("tar"), fold_num, stim_type, subj_num, voxel_num, starts_with("r_model")) %>% 
+        mutate(r_model_diff = r_model_by.run.type - r_model_together) %>% 
+        # summarize over voxels, keeping subjects/folds separate
+        group_by(tar_batch, tar_rep, stim_type, subj_num) %>% 
+        summarize(across(starts_with("r_model"), mean), .groups = "drop") %>% 
+        # bind the real differences on
+        left_join(r_joined, by = c("stim_type", "subj_num"), suffix = c("_perm", "_real")) %>% 
+        # summarize over folds within each perm iteration
+        group_by(tar_batch, tar_rep, stim_type) %>% 
+        summarize(across(starts_with("r_"), mean), .groups = "drop") %>% 
+        select(tar_batch, tar_rep, stim_type, starts_with("r_model")) %>% 
+        # collect the non-ring-expand diffs together
+        pivot_wider(names_from = stim_type, values_from = starts_with("r_model")) %>% 
+        rowwise() %>% 
+        mutate(r_model_diff_other3 = mean(c_across(c(r_model_diff_wedge_clock,
+                                                     r_model_diff_wedge_counter,
+                                                     r_model_diff_ring_contract))),
+               r_model_diff_perm_other3 = mean(c_across(c(r_model_diff_perm_wedge_clock,
+                                                          r_model_diff_perm_wedge_counter,
+                                                          r_model_diff_perm_ring_contract)))) %>% 
+        ungroup() %>% 
+        mutate(diff_diff = r_model_diff_ring_expand - r_model_diff_other3,
+               diff_diff_perm = r_model_diff_perm_ring_expand - r_model_diff_perm_other3) %>%
+        # now get empirical p-vals from the distribution
+        summarize(pval_intxn = (sum(diff_diff_perm > diff_diff)+1)/(n()+1))
+      
+        
+        
+
+        summarize(pval_diff = (sum(r_model_diff_perm > r_model_diff)+1) / (n()+1),
+                  pval_together = (sum(r_model_together_perm > r_model_together)+1) / (n()+1),
+                  pval_by.run.type = (sum(r_model_by.run.type_perm > r_model_by.run.type)+1) / (n()+1))
+      }
+  )
+)
 ## plotty plot plots ----
 
 targets_plots <- list(
@@ -444,13 +519,30 @@ targets_niftis <- list(
   tar_target(
     name = statmap_r_flynet_sc_ring.expand,
     command = {
-      voxels <- metrics_flynet_sc_studyforrest_by.run.type %>% 
-        filter(this_run_type == "ring_expand") %>% 
-        preplot_voxels_model_r(voxel_coords = voxel.coords_sc)
+      voxel_perms <- perms_flynet_sc_studyforrest %>% 
+        select(tar_batch, tar_rep, by.run.type) %>% 
+        unnest(by.run.type) %>% 
+        select(-test_subjs) %>% 
+        unnest(perf) %>% 
+        filter(stim_type == "ring_expand") %>%
+        group_by(tar_batch, tar_rep, voxel_num) %>%
+        summarize(r_model_perm = mean(r_model),
+                  .groups = "drop")
       
-      write_statmap_nifti(metric_voxels = voxels,
+      voxel_values <- metrics_flynet_sc_studyforrest_by.run.type %>% 
+        filter(run_type == "ring_expand") %>% 
+        preplot_voxels_model_r(voxel_coords = voxel.coords_sc) %>% 
+        right_join(voxel_perms, by = "voxel_num") %>% 
+        group_by(voxel_num, x, y, z, side) %>% 
+        summarize(pval = (sum(r_model_perm > r_model)+1)/(n()+1), 
+                  r_model = mean(r_model),
+                  .groups = "drop") %>% 
+        fdr_correct() %>% 
+        filter(pval < q_cutoff)
+      
+      write_statmap_nifti(metric_voxels = voxel_values,
                           nifti_mask = nifti.mask_sc,
-                          out_path = "/home/data/eccolab/studyforrest-data-phase2/SC_pls_r_ring_expand_flynet.nii")
+                          out_path = "/home/data/eccolab/studyforrest-data-phase2/SC_pls_r_ring_expand_flynet_p005.nii")
     },
     format = "file"
   )
@@ -464,6 +556,7 @@ c(
   targets_pls,
   targets_metrics,
   targets_perms,
+  targets_perm_results,
   targets_plots,
   targets_figs,
   targets_niftis

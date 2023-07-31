@@ -1,0 +1,187 @@
+---
+title: "modeling iLooming using FlyNet"
+format: html
+---
+
+```{r setup}
+#| include: false
+
+library(tidyverse)
+
+target_store <- here::here("ignore", "_targets", "eyeblink")
+
+hit.probs <- targets::tar_read(hit.probs_ayzenberg2015,
+                               store = target_store)
+
+blink.counts <- targets::tar_read(blink.counts_ayzenberg2015,
+                                  store = target_store)
+```
+
+## Just exploratory graphs
+
+```{r}
+hit.probs %>% 
+  ggplot(aes(x = frame_num, y = hit_prob, color = stimulus, fill = stimulus)) + 
+  geom_smooth(alpha = 0.2) + 
+  facet_wrap(~ ttc) +
+  labs(title = "P(hit) over time for iLooming replica videos")
+```
+
+```{r}
+hit.probs %>% 
+  group_by(frame_num, ttc) %>% 
+  summarize(hit_prob = mean(hit_prob), .groups = "drop") %>% 
+  ggplot(aes(x = frame_num, y = hit_prob, color = factor(ttc), fill = factor(ttc))) + 
+  geom_line() + 
+  geom_smooth() + 
+  labs(title = "P(hit) over time for iLooming replica videos",
+       subtitle = "averaged over videos within each TTC")
+```
+
+```{r}
+blink.counts %>% 
+  group_by(frame_num, ttc) %>% 
+  summarize(n_blinks = sum(n_blinks), .groups = "drop") %>% 
+  ggplot(aes(x = frame_num, y = n_blinks, color = factor(ttc), fill = factor(ttc))) +
+  geom_line() +
+  geom_smooth() +
+  labs(title = "Blink counts over time",
+       subtitle = "summed over Ps within each TTC")
+```
+
+```{r}
+blink.counts %>% 
+  group_by(frame_num, ttc) %>% 
+  summarize(n_blinks = sum(n_blinks), .groups = "drop") %>% 
+  left_join(hit.probs %>% 
+              group_by(frame_num, ttc) %>% 
+              summarize(hit_prob = mean(hit_prob), .groups = "drop"),
+            by = c("frame_num", "ttc"))
+```
+
+## Relating blink counts to hit prob
+
+```{r}
+blink.counts_by_flynet <- targets::tar_read(blink.counts_by_hit.prob,
+                                  store = target_store) %>% 
+  # rescale units for regression
+  mutate(hit_prob = hit_prob * 10)
+```
+
+```{r}
+blink.counts_by_flynet %>% 
+  filter(frame_num_shifted >= 125) %>% 
+  ggplot(aes(x = ttc, y = hit_prob, fill = factor(ttc))) +
+  geom_boxplot() +
+  labs(title = "FlyNet P(hit)",
+       subtitle = "time-locked to end of video")
+```
+
+```{r}
+blink.counts_by_flynet %>% 
+  ggplot(aes(x = frame_num, color = factor(ttc))) +
+  geom_line(aes(y = n_blinks)) +
+  geom_line(aes(y = hit_prob), linetype = "dashed") +
+  labs(title = "Baby blink sums (solid) and FlyNet P(hit) (dashed)")
+```
+```{r}
+blink.counts_by_flynet %>% 
+  filter(frame_num_shifted >= 125) %>% 
+  mutate(hit_prob = hit_prob * 10) %>% 
+  ggplot(aes(x = frame_num_shifted, color = factor(ttc))) +
+  geom_hline(yintercept = 3, linetype = "dotted") +
+  geom_line(aes(y = n_blinks)) +
+  geom_line(aes(y = hit_prob), linetype = "dashed") +
+  labs(title = "Baby blink sums (solid) and FlyNet P(hit) (dashed)",
+       subtitle = "time-locked to end of video")
+```
+
+```{r}
+blink.counts_by_flynet %>% 
+  filter(frame_num_shifted >= 125) %>% 
+  ggplot(aes(x = hit_prob, y = n_blinks, color = factor(ttc), fill = factor(ttc))) +
+  geom_point() +
+  geom_smooth(method = "glm", method.args = list(family = "poisson"), alpha = 0.2) +
+  scale_color_viridis_d() +
+  scale_fill_viridis_d() +
+  labs(title = "Baby blink sums as a function of FlyNet P(hit)")
+```
+
+```{r}
+blink.counts_by_flynet %>% 
+  filter(frame_num_shifted >= 190) %>% 
+  mutate(frame_num_shifted = frame_num_shifted - 200,
+         ttc = ttc - 3) %>% 
+  lm(hit_prob ~ ttc, data = .) %>% 
+  summary()
+```
+
+```{r}
+blink.counts_by_flynet %>% 
+  filter(frame_num_shifted >= 125) %>% 
+  mutate(ttc = ttc - 3,
+         frame_num_shifted = frame_num_shifted - 200) %>% 
+  glm(n_blinks ~ frame_num_shifted * ttc, family = "poisson", data = .) %>% 
+  summary()
+```
+
+```{r main-model}
+blink.counts_by_flynet %>% 
+  filter(frame_num_shifted >= 125) %>% 
+  mutate(ttc = ttc - 3) %>% 
+  glm(n_blinks ~ hit_prob + ttc, family = "poisson", data = .) %>% 
+  summary()
+```
+
+## Modeling stuff read in from targets
+
+```{r}
+coefs_blink.by.hit <- targets::tar_read(coefs_blink.by.hit,
+                                        store = target_store)
+perms_hit.prob <- targets::tar_read(perms_hit.prob,
+                                    store = target_store)
+perms_ttc <- targets::tar_read(perms_ttc,
+                               store = target_store)
+```
+
+```{r}
+perms_hit.prob %>% 
+  mutate(estimate_true = coefs_blink.by.hit$estimate[coefs_blink.by.hit$term == "hit_prob"]) %>% 
+  summarize(estimate = mean(estimate_true), 
+            pval = (sum(estimate > estimate_true) + 1)/(n() + 1))
+```
+
+```{r}
+perms_ttc %>% 
+  mutate(estimate_true = coefs_blink.by.hit$estimate[coefs_blink.by.hit$term == "ttc"]) %>% 
+  summarize(estimate = mean(estimate_true), 
+            pval = (sum(estimate > estimate_true) + 1)/(n() + 1))
+```
+
+
+```{r phils-auc-thing}
+blink.counts_by_flynet %>% 
+  filter(frame_num_shifted >= 125) %>% 
+  mutate(blink_cat = if_else(n_blinks >= 5, "high", "low"),
+         blink_cat = fct_relevel(blink_cat, "high"),
+         hit_prob = hit_prob / 10) %>% 
+  group_by(ttc) %>% 
+  yardstick::roc_auc(truth = blink_cat, hit_prob)
+```
+
+```{r}
+blink.counts_by_flynet %>% 
+  filter(frame_num_shifted >= 125) %>% 
+  mutate(blink_cat = if_else(n_blinks >= 5, "high", "low"),
+         blink_cat = fct_relevel(blink_cat, "high"),
+         hit_prob = hit_prob / 10) %>% 
+  group_by(ttc) %>% 
+  yardstick::roc_curve(truth = blink_cat, hit_prob) %>% 
+  autoplot() +
+  scale_color_viridis_d(option = "magma", end = 0.9) +
+  labs(title = "AUC for discriminating 5 or more blinks by hit prob") +
+  theme(legend.position = c(1, 0),
+        legend.justification = c(1, 0),
+        legend.background = element_blank())
+```
+
