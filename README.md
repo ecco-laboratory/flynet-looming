@@ -1,5 +1,5 @@
-# emonet-py
-Port of Phil Kragel et al.'s (2019) EmoNet, but in Python
+# flynet-looming
+code for project: "Visual looming is a primitive for human emotion"
 
 ## Environment management notes
 
