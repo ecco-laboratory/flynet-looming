@@ -299,7 +299,15 @@ symmetrize_distances <- function (distances, row_col, col_col, y_cols) {
 # Note that times sets the number of permutation iterations to be run in a single batch
 # and there is no paralleling inside of this function
 # but since it's not re-fitting any models, it's pretty fast and doesn't NEED to be paralleled
-perm_beh_metrics <- function (in_preds_flynet, in_preds_emonet, truth_col, estimate_col, pred_prefix, path_ratings, path_ids_train, times) {
+resample_beh_metrics <- function (in_preds_flynet, 
+                                  in_preds_emonet, 
+                                  truth_col, 
+                                  estimate_col, 
+                                  pred_prefix, 
+                                  path_ratings, 
+                                  path_ids_train,
+                                  resample_type = "permute",
+                                  times) {
   truth_col <- enquo(truth_col)
   estimate_col <- enquo(estimate_col)
   
@@ -311,9 +319,18 @@ perm_beh_metrics <- function (in_preds_flynet, in_preds_emonet, truth_col, estim
   # which effectively keeps the training model the same, without refitting it
   out <- in_preds_flynet %>% 
     select(-censored) %>% 
-    left_join(in_preds_emonet, by = c("video", "emotion_obs"), suffix = c(".flynet", ".emonet")) %>% 
-    # permute the ground truth outcomes before calculating classification "accuracy"
-    permutations(permute = !!truth_col, times = times) %>% 
+    left_join(in_preds_emonet, by = c("video", "emotion_obs"), suffix = c(".flynet", ".emonet"))
+  
+  if (resample_type == "permute") {
+    out %<>%
+      # permute the ground truth outcomes before calculating classification "accuracy"
+      permutations(permute = !!truth_col, times = times)
+  } else if (resample_type == "bootstrap") {
+    out %<>%
+      # bootstrap resample before calculating classification accuracy
+      bootstraps(permute = !!truth_col, times = times)
+  }
+  out %<>% 
     # needs to be named using tidymodels tune convention to use tune metrics collecting later
     mutate(.metrics_flynet = map(splits, 
                         \(x) x %>% 
@@ -327,7 +344,7 @@ perm_beh_metrics <- function (in_preds_flynet, in_preds_emonet, truth_col, estim
                           metrics(truth = !!truth_col, 
                                   estimate = !!estimate_col, 
                                   starts_with(pred_prefix)),
-                          .progress = "permuting FlyNet performance"),
+                          .progress = "resampling FlyNet performance"),
            .metrics_emonet = map(splits, 
                                  \(x) x %>% 
                                    analysis() %>% 
@@ -336,7 +353,7 @@ perm_beh_metrics <- function (in_preds_flynet, in_preds_emonet, truth_col, estim
                                    metrics(truth = !!truth_col, 
                                            estimate = !!estimate_col, 
                                            starts_with(pred_prefix)),
-                                 .progress = "permuting EmoNet performance"))
+                                 .progress = "resampling EmoNet performance"))
   
   return (out)
 }

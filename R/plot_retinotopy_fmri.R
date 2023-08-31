@@ -32,18 +32,16 @@ plot_flynet_activations_convolved <- function (activations, run_types = NULL) {
 
 plot_boxplot_cv_r_studyforrest <- function (metrics_flynet_sc,
                                             metrics_flynet_sc_run,
-                                            metrics_prf_sc,
                                             metrics_flynet_v1,
-                                            metrics_flynet_v1_run,
-                                            metrics_prf_v1) {
+                                            metrics_flynet_v1_run) {
   out <- bind_rows("Collision detection model, all stimuli" = metrics_flynet_sc,
                    "Collision detection model, stim-specific" = metrics_flynet_sc_run,
-                   "Group-average pRF model, all stimuli" = metrics_prf_sc,
+                   # "Group-average pRF model, all stimuli" = metrics_prf_sc,
                    .id = "model_type") %>% 
     bind_rows(SC = .,
               V1 = bind_rows("Collision detection model, all stimuli" = metrics_flynet_v1,
                              "Collision detection model, stim-specific" = metrics_flynet_v1_run,
-                             "Group-average pRF model, all stimuli" = metrics_prf_v1,
+                             # "Group-average pRF model, all stimuli" = metrics_prf_v1,
                              .id = "model_type"),
               .id = "roi") %>% 
     select(roi, model_type, perf) %>% 
@@ -62,7 +60,7 @@ plot_boxplot_cv_r_studyforrest <- function (metrics_flynet_sc,
                                   "Contracting ring" = "ring_contract", 
                                   "Expanding ring" = "ring_expand"),
            model_type = fct_relevel(model_type,
-                                    "Group-average pRF model, all stimuli",
+                                    # "Group-average pRF model, all stimuli",
                                     "Collision detection model, all stimuli",
                                     "Collision detection model, stim-specific")) %>% 
     ggplot(aes(x = stim_type, y = cv_r, fill = model_type)) + 
@@ -71,9 +69,8 @@ plot_boxplot_cv_r_studyforrest <- function (metrics_flynet_sc,
     geom_boxplot(alpha = 0.8) + 
     # geom_jitter(alpha = 0.5, width = 0.1) + 
     facet_grid(roi ~ .) +
-    scale_fill_manual(values = c("#348338", "#0033a0", "#f2a900")) +
     guides(x = guide_axis(angle = 30), color = "none") +
-    labs(x = "Retinotopic stimulus type", y = "cross-validated r")
+    labs(x = "Retinotopic stimulus type", y = "Cross-validated r")
   
   return (out)
 }
@@ -89,8 +86,9 @@ preplot_voxels_model_r <- function (metrics, voxel_coords) {
   return (out)
 }
 
-write_statmap_nifti <- function (metric_voxels, nifti_mask, out_path) {
+write_statmap_nifti <- function (metric_voxels, mask_path, out_path) {
 
+  nifti_mask <- readNifti(mask_path)
   nifti_mask[ , , ] <- 0L
   # this is in glue pkg specification, seems easiest here
   # this_mask_path <- "/home/data/eccolab/studyforrest-data-phase2/SC_pls_r_ring_expand_flynet.nii"

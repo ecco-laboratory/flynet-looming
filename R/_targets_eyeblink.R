@@ -221,6 +221,26 @@ targets_models <- list(
       premodel_eyeblink() %>% 
       glm(n_blinks ~ hit_prob + ttc, family = "poisson", data = .) %>% 
       tidy()
+  ),
+  tar_target(
+    name = pre.auc_blink.by.hit,
+    command = blink.counts_by_hit.prob %>% 
+      filter(frame_num_shifted >= 125) %>% 
+      mutate(blink_cat = if_else(n_blinks >= 5, "high", "low"),
+             blink_cat = fct_relevel(blink_cat, "high"))
+  ),
+  tar_target(
+    name = auc_blink.by.hit,
+    command = {
+      auc_overall <- pre.auc_blink.by.hit %>% 
+        yardstick::roc_auc(truth = blink_cat, hit_prob)
+      
+      auc_by_ttc <- pre.auc_blink.by.hit %>% 
+        group_by(ttc) %>% 
+        yardstick::roc_auc(truth = blink_cat, hit_prob)
+      
+      bind_rows(auc_by_ttc, auc_overall)
+    }
   )
 )
 
@@ -240,6 +260,74 @@ targets_perms <- list(
       premodel_eyeblink() %>% 
       perm_eyeblink_ttc(times = n_batches * n_reps_per_batch) %>% 
       filter(term == "ttc")
+  ),
+  tar_target(
+    name = perms_auc_overall,
+    command = pre.auc_blink.by.hit %>% 
+      permutations(blink_cat, times = n_batches * n_reps_per_batch) %>% 
+      mutate(.metrics = map(splits, \(x) x %>% 
+                              analysis() %>% 
+                              roc_auc(truth = blink_cat, hit_prob),
+                            .progress = "permuting overall blink by hit AUC")) %>%
+      select(-splits) %>% 
+      unnest(.metrics)
+  ),
+  tar_target(
+    name = boots_auc_overall,
+    command = pre.auc_blink.by.hit %>% 
+      bootstraps(times = n_batches * n_reps_per_batch) %>% 
+      mutate(.metrics = map(splits, \(x) x %>% 
+                              analysis() %>% 
+                              roc_auc(truth = blink_cat, hit_prob),
+                            .progress = "bootstrapping overall blink by hit AUC")) %>%
+      select(-splits) %>% 
+      unnest(.metrics)
+  ),
+  tar_target(
+    name = perms_auc_ttc,
+    command = pre.auc_blink.by.hit %>% 
+      nest(data = -ttc) %>% 
+      mutate(perms = map(data, \(x) permutations(x, blink_cat, times = n_batches * n_reps_per_batch))) %>% 
+      select(-data) %>% 
+      unnest(perms) %>% 
+      mutate(.metrics = map(splits, \(x) x %>% 
+                              analysis() %>% 
+                              roc_auc(truth = blink_cat, hit_prob),
+                            .progress = "permuting blink by hit AUC by TTC")) %>%
+      select(-splits) %>% 
+      unnest(.metrics)
+  )
+)
+
+targets_perm_results <- list(
+  tar_target(
+    name = perm.pvals_auc_overall,
+    command = perms_auc_overall %>% 
+      left_join(auc_blink.by.hit %>% 
+                  filter(is.na(ttc)),
+                by = c(".metric", ".estimator"),
+                suffix = c("_perm", "_real")) %>% 
+      summarize(auc = mean(.estimate_real),
+                pval = (sum(.estimate_perm > .estimate_real) + 1) / (n() + 1))
+  ),
+  tar_target(
+    # for this one we are permuting and then testing the RANK CORRELATION
+    # against the "ideal" rank correlation, aka 34567 TTC
+    # the true test statistic will be the actual rank correlation
+    name = perm.pvals_auc_ttc,
+    command = {
+      tau_real <- auc_blink.by.hit %>% 
+        filter(!is.na(ttc)) %>% 
+        summarize(tau = cor(ttc, .estimate)) %>% 
+        pull(tau)
+      perms_auc_ttc %>% 
+        group_by(id) %>% 
+        summarize(tau_perm = cor(ttc, .estimate, method = "kendall")) %>% 
+        mutate(tau_real = tau_real) %>% 
+        summarize(tau = mean(tau_real),
+                  # less than BECAUSE OBSERVED TAU IS NEGATIVE!!!
+                  pval = (sum(tau_perm < tau_real) + 1) / (n() + 1))
+      }
   )
 )
 
@@ -247,20 +335,20 @@ targets_perms <- list(
 
 # remember you can't set the fonts on RStudio Cloud!
 
-targets_figs <- list(
+targets_plots <- list(
   tar_target(
     name = plot_blink.by.time,
     command = blink.counts_by_hit.prob %>% 
       filter(frame_num_shifted >= 125) %>% 
       # .033 to get it in seconds, not milliseconds
-      mutate(time = frame_num_shifted * .033) %>% 
+      mutate(time = (frame_num_shifted - max(frame_num_shifted)) * .033) %>% 
       ggplot(aes(x = time, y = n_blinks, color = factor(ttc))) + 
       geom_line(aes(group = ttc)) + 
       scale_color_viridis_d(option = "magma") + 
       guides(color = guide_legend(override.aes = list(size = 5))) + 
-      labs(x = "Time (s)",
+      labs(x = "Pre-collision time (s)",
            y = "# blinks (summed across Ps)",
-           color = "Time to collision (s)") +
+           color = "Time-to-contact (s)") +
       theme_bw() +
       theme(legend.position = c(0, 1), 
             legend.justification = c(0, 1), 
@@ -276,27 +364,93 @@ targets_figs <- list(
                   method.args = list(family = "poisson"), 
                   color = "black") +
       scale_color_viridis_d(option = "magma", end = 0.9) +
+      guides(color = guide_legend(override.aes = list(size = 3))) +
       labs(x = "Framewise hit probability",
            y = "# blinks (summed across Ps)",
-           color = "Time to collision (s)") +
-      theme_bw() +
-      theme(legend.position = c(0, 1), 
-            legend.justification = c(0, 1), 
-            legend.background = element_blank())
+           color = "Time to contact (s)")
   ),
   tar_target(
     name = plot_auc_blink.by.hit,
-    command = blink.counts_by_hit.prob %>% 
-      filter(frame_num_shifted >= 125) %>% 
-      mutate(blink_cat = if_else(n_blinks >= 5, "high", "low"),
-             blink_cat = fct_relevel(blink_cat, "high")) %>% 
+    command = pre.auc_blink.by.hit %>% 
       group_by(ttc) %>% 
       yardstick::roc_curve(truth = blink_cat, hit_prob) %>% 
       autoplot() +
       scale_color_viridis_d(option = "magma", end = 0.9) +
-      theme(legend.position = c(1, 0),
-            legend.justification = c(1, 0),
-            legend.background = element_blank())
+      labs(x = "1 - Specificity",
+           y = "Sensitivity", color = "TTC (s)") +
+      guides(color = guide_legend(override.aes = list(size = 3)))
+  )
+)
+
+targets_figs <- list(
+  tar_target(
+    name = fig_schematic_hit.prob,
+    command = (hit.probs_ayzenberg2015 %>% 
+                 filter(ttc == 3, stimulus == "Butterfly2") %>% 
+                 mutate(time = frame_num * .033) %>% 
+                 ggplot(aes(x = time, y = hit_prob)) +
+                 geom_line() +
+                 geom_smooth(color = "#41b6e6") +
+                 ylim(0, 1) +
+                 labs(x = "Time (s)",
+                      y = "Estimated P(hit)") +
+                 theme_bw(base_size = 12) +
+                 theme(plot.background = element_blank())) %>% 
+      ggsave(filename = "eyeblink_butterfly2_hit.prob.svg",
+             plot = .,
+             path = here::here("ignore", "figs"),
+             width = 1200,
+             height = 600,
+             units = "px"),
+    format = "file"
+  ),
+  tar_target(
+    name = fig_blink.by.time,
+    command = (plot_blink.by.time +
+                 theme_bw(base_size = 12) +
+                 theme(legend.position = c(0, 1), 
+                       legend.justification = c(0, 1), 
+                       legend.background = element_blank(),
+                       plot.background = element_blank())) %>% 
+      ggsave(filename = "eyeblink_blink.by.time.png",
+             plot = .,
+             path = here::here("ignore", "figs"),
+             width = 1800,
+             height = 1200,
+             units = "px"),
+    format = "file"
+  ),
+  tar_target(
+    name = fig_blink.by.hit,
+    command = (plot_blink.by.hit +
+                 theme_bw(base_size = 12) +
+                 theme(legend.position = c(0, 1), 
+                       legend.justification = c(0, 1),
+                       legend.background = element_blank(),
+                       plot.background = element_blank())) %>% 
+      ggsave(filename = "eyeblink_blink.by.hit.svg",
+             plot = .,
+             path = here::here("ignore", "figs"),
+             width = 1800,
+             height = 1200,
+             units = "px"),
+    format = "file"
+  ),
+  tar_target(
+    name = fig_auc_blink.by.hit,
+    command = (plot_auc_blink.by.hit +
+                 theme(text = element_text(size = 12),
+                       legend.position = c(1, 0),
+                       legend.justification = c(1, 0),
+                       legend.background = element_blank(),
+                       plot.background = element_blank())) %>% 
+      ggsave(filename = "eyeblink_auc_blink.by.hit.svg",
+             plot = .,
+             path = here::here("ignore", "figs"),
+             width = 1000,
+             height = 1000,
+             units = "px"),
+    format = "file"
   )
 )
 
@@ -310,5 +464,7 @@ c(
   targets_activations,
   targets_models,
   targets_perms,
+  targets_perm_results,
+  targets_plots,
   targets_figs
 )
