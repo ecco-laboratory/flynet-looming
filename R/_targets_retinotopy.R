@@ -37,11 +37,11 @@ plan(batchtools_slurm,
      resources = list(ntasks = 1L,
                       ncpus = n_slurm_cpus,
                       # nodelist = "node1",
-                      exclude = "gpu2",
+                      exclude = "gpu2,node3",
                       # walltime 86400 for 24h (partition day-long)
                       # walltime 1800 for 30min (partition short)
                       walltime = 86400L,
-                      memory = 16000L,
+                      memory = 8000L,
                       partition = "day-long"))
 # These parameters are relevant later inside the permutation testing targets
 n_batches <- 100
@@ -232,13 +232,17 @@ targets_pls <- list(
   tar_target(
     name = pls_flynet_v1_studyforrest,
     command = fit_xval(in_x = flynet_activations_convolved_studyforrest,
-                       in_y = fmri_data_v1_studyforrest,
+                       in_y = fmri_data_v1_studyforrest %>% 
+                         # re-number it to skip the missing subject 6
+                         # so that the n folds thing works
+                         mutate(subj_num = if_else(subj_num > 6, subj_num - 1L, subj_num)),
                        include_fit = FALSE)
   ),
   tar_target(
     name = pls_flynet_v1_studyforrest_by.run.type,
     command = fit_xval(in_x = flynet_activations_convolved_studyforrest,
-                       in_y = fmri_data_v1_studyforrest,
+                       in_y = fmri_data_v1_studyforrest %>% 
+                         mutate(subj_num = if_else(subj_num > 6, subj_num - 1L, subj_num)),
                        by_run_type = TRUE,
                        include_fit = FALSE)
   ),
@@ -286,7 +290,6 @@ targets_metrics <- list(
     name = metrics_flynet_v1_studyforrest,
     command = {
       pls_flynet_v1_studyforrest %>% 
-        filter(fold_num != 6) %>% 
         wrap_pred_metrics(in_groupavg = groupavgs_fmri_v1_studyforrest,
                           decoding = FALSE) %>% 
         select(-preds)
@@ -297,7 +300,6 @@ targets_metrics <- list(
     command = {
       pls_flynet_v1_studyforrest_by.run.type %>% 
         rename(run_type = this_run_type) %>% 
-        filter(fold_num != 6) %>% 
         wrap_pred_metrics(in_groupavg = groupavgs_fmri_v1_studyforrest %>% 
                             unnest(groupavg) %>% 
                             nest(groupavg = -c(fold_num, run_type)),
@@ -342,19 +344,45 @@ targets_perms <- list(
       permuted_trs <- get_permuted_order(fmri_data_sc_studyforrest, n_cycles = 5L)
       
       perms_together <- pls_pred.only_flynet_sc_studyforrest %>% 
-        wrap_pred_metrics(in_groupavg = groupavgs_fmri_sc_studyforrest,
-                          permute_order = permuted_trs,
+        wrap_pred_metrics(permute_order = permuted_trs,
                           decoding = FALSE) %>% 
         select(-preds)
       
       perms_by_run_type <- pls_pred.only_flynet_sc_studyforrest_by.run.type %>% 
         rename(run_type = this_run_type) %>% 
-        wrap_pred_metrics(in_groupavg = groupavgs_fmri_sc_studyforrest %>% 
-                            unnest(groupavg) %>% 
-                            nest(groupavg = -c(fold_num, run_type)),
-                          permute_order = permuted_trs,
+        wrap_pred_metrics(permute_order = permuted_trs,
                           decoding = FALSE) %>% 
         select(-preds)
+      
+      tibble(together = list(perms_together),
+             by.run.type = list(perms_by_run_type))
+    },
+    batches = n_batches,
+    reps = n_reps_per_batch,
+    storage = "worker",
+    retrieval = "worker"
+  ),
+  tar_rep(
+    name = perms_flynet_v1_studyforrest,
+    command = {
+      permuted_trs <- get_permuted_order(fmri_data_v1_studyforrest, n_cycles = 5L)
+      
+      perms_together <- pls_flynet_v1_studyforrest %>% 
+        wrap_pred_metrics(permute_order = permuted_trs,
+                          decoding = FALSE) %>% 
+        select(-preds) %>% 
+        mutate(perf = map(perf, \(x) x %>% 
+                            group_by(stim_type) %>% 
+                            summarize(across(c(q2_model, r_model), mean))))
+      
+      perms_by_run_type <- pls_flynet_v1_studyforrest_by.run.type %>% 
+        rename(run_type = this_run_type) %>% 
+        wrap_pred_metrics(permute_order = permuted_trs,
+                          decoding = FALSE) %>% 
+        select(-preds) %>% 
+        mutate(perf = map(perf, \(x) x %>% 
+                            group_by(stim_type) %>% 
+                            summarize(across(c(q2_model, r_model), mean))))
       
       tibble(together = list(perms_together),
              by.run.type = list(perms_by_run_type))
@@ -381,77 +409,19 @@ targets_perms <- list(
 targets_perm_results <- list(
   tar_target(
     name = perm.pvals_flynet_sc_studyforrest,
-    command = {
-      r_together <- metrics_flynet_sc_studyforrest %>% 
-        select(fold_num, perf) %>% 
-        unnest(perf) %>% 
-        group_by(stim_type, subj_num) %>% 
-        summarize(r_model = mean(r_model), .groups = "drop")
-      
-      r_by.run.type <- metrics_flynet_sc_studyforrest_by.run.type %>% 
-        select(fold_num, perf) %>% 
-        unnest(perf) %>% 
-        group_by(stim_type, subj_num) %>% 
-        summarize(r_model = mean(r_model), .groups = "drop")
-      
-      r_joined <- full_join(r_together,
-                            r_by.run.type,
-                            by = c("stim_type", "subj_num"),
-                            suffix = c("_together", "_by.run.type")) %>% 
-        mutate(r_model_diff = r_model_by.run.type - r_model_together)
-      
-      perms_flynet_sc_studyforrest %>% 
-        # pre-unnest to get them to line up together
-        mutate(together = map(together,
-                              \(x) x %>% 
-                                select(-test_subjs) %>%
-                                unnest(perf)),
-               by.run.type = map(by.run.type,
-                                 \(x) x %>%
-                                   select(-test_subjs) %>%
-                                   unnest(perf))) %>% 
-        mutate(joined = map2(together, by.run.type,
-                             \(x, y) full_join(x, y,
-                                               by = c("fold_num", "stim_type", "subj_num", "voxel_num"),
-                                               suffix = c("_together", "_by.run.type")))) %>%
-        select(tar_batch, tar_rep, joined) %>%
-        unnest(joined) %>% 
-        # calculate the permuted difference in predicted-actual BOLD R
-        select(starts_with("tar"), fold_num, stim_type, subj_num, voxel_num, starts_with("r_model")) %>% 
-        mutate(r_model_diff = r_model_by.run.type - r_model_together) %>% 
-        # summarize over voxels, keeping subjects/folds separate
-        group_by(tar_batch, tar_rep, stim_type, subj_num) %>% 
-        summarize(across(starts_with("r_model"), mean), .groups = "drop") %>% 
-        # bind the real differences on
-        left_join(r_joined, by = c("stim_type", "subj_num"), suffix = c("_perm", "_real")) %>% 
-        # summarize over folds within each perm iteration
-        group_by(tar_batch, tar_rep, stim_type) %>% 
-        summarize(across(starts_with("r_"), mean), .groups = "drop") %>% 
-        select(tar_batch, tar_rep, stim_type, starts_with("r_model")) %>% 
-        # collect the non-ring-expand diffs together
-        pivot_wider(names_from = stim_type, values_from = starts_with("r_model")) %>% 
-        rowwise() %>% 
-        mutate(r_model_diff_other3 = mean(c_across(c(r_model_diff_wedge_clock,
-                                                     r_model_diff_wedge_counter,
-                                                     r_model_diff_ring_contract))),
-               r_model_diff_perm_other3 = mean(c_across(c(r_model_diff_perm_wedge_clock,
-                                                          r_model_diff_perm_wedge_counter,
-                                                          r_model_diff_perm_ring_contract)))) %>% 
-        ungroup() %>% 
-        mutate(diff_diff = r_model_diff_ring_expand - r_model_diff_other3,
-               diff_diff_perm = r_model_diff_perm_ring_expand - r_model_diff_perm_other3) %>%
-        # now get empirical p-vals from the distribution
-        summarize(pval_intxn = (sum(diff_diff_perm > diff_diff)+1)/(n()+1))
-      
-        
-        
-
-        summarize(pval_diff = (sum(r_model_diff_perm > r_model_diff)+1) / (n()+1),
-                  pval_together = (sum(r_model_together_perm > r_model_together)+1) / (n()+1),
-                  pval_by.run.type = (sum(r_model_by.run.type_perm > r_model_by.run.type)+1) / (n()+1))
-      }
+    command = calc_perm_pvals(metrics_flynet_sc_studyforrest,
+                              metrics_flynet_sc_studyforrest_by.run.type,
+                              perms_flynet_sc_studyforrest)
+  ),
+  tar_target(
+    name = perm.pvals_flynet_v1_studyforrest,
+    command = calc_perm_pvals(metrics_flynet_v1_studyforrest,
+                              metrics_flynet_v1_studyforrest_by.run.type,
+                              perms_flynet_v1_studyforrest,
+                              has_voxel_num = FALSE)
   )
 )
+
 ## plotty plot plots ----
 
 targets_plots <- list(
@@ -464,53 +434,56 @@ targets_plots <- list(
     name = boxplot_cv.r_studyforrest,
     command = plot_boxplot_cv_r_studyforrest(metrics_flynet_sc_studyforrest,
                                              metrics_flynet_sc_studyforrest_by.run.type,
-                                             metrics_prf_sc_studyforrest,
                                              metrics_flynet_v1_studyforrest,
-                                             metrics_flynet_v1_studyforrest_by.run.type,
-                                             metrics_prf_v1_studyforrest)
+                                             metrics_flynet_v1_studyforrest_by.run.type)
   )
 )
 
 targets_figs <- list(
   tar_target(
     name = fig_schematic_flynet_activation,
-    command = ggsave(here::here("ignore", "figs", "ohbm2023_schematic_flynet_activation.png"),
+    command = ggsave(here::here("ignore", "figs", "retinotopy_schematic_flynet_activation.svg"),
                      plot = schematic_flynet_activation_timecourse + 
                        guides(color = "none") + 
                        scale_color_manual(values = c("#c35413", "#41b6e6")) + 
-                       labs(x = "time", y = "predicted BOLD") + 
-                       theme_bw(base_size = 18) + 
+                       labs(x = "Time", y = "Predicted BOLD") + 
+                       theme_bw(base_size = 12) + 
                        theme(axis.text = element_blank(), plot.background = element_rect(fill = "transparent")),
-                     width = 6,
-                     height = 4,
-                     units = "in"),
+                     width = 1200,
+                     height = 600,
+                     units = "px"),
     format = "file"
   ),
   tar_target(
     name = fig_boxplot_cv.r_studyforrest,
-    command = ggsave(here::here("ignore", "figs", "ohbm2023_boxplot_cv.r_studyforrest.png"),
+    command = ggsave(here::here("ignore", "figs", "retinotopy_boxplot_cv.r_studyforrest.svg"),
                      plot = boxplot_cv.r_studyforrest + 
-                       theme_bw(base_size = 14) +
-                       theme(legend.position = 0:1,
-                             legend.justification = 0:1,
+                       # previously was using "#348338" for the pRF
+                       scale_fill_viridis_d(begin = 0.3, end = 0.7, option = "magma") +
+                       theme_bw(base_size = 10) +
+                       theme(legend.position = c(0,0),
+                             legend.justification = c(0,0),
                              legend.background = element_blank(),
                              legend.title = element_blank(),
                              plot.background = element_rect(fill = "transparent")),
-                     width = 8,
-                     height = 6,
-                     units = "in"),
+                     width = 1600,
+                     height = 1200,
+                     units = "px"),
     format = "file"
   )
 )
 
+## not so nifty niftis ----
+
 targets_niftis <- list(
   tar_target(
-    name = nifti.mask_sc,
-    command = readNifti("/home/data/eccolab/studyforrest-data-phase2/SC_mask_vox_indx.nii")
+    name = nifti.path_sc,
+    command = "/home/data/eccolab/studyforrest-data-phase2/SC_mask_vox_indx.nii",
+    format = "file"
   ),
   tar_target(
     name = voxel.coords_sc,
-    command = which(nifti.mask_sc != 0, arr.ind = TRUE) %>% 
+    command = which(readNifti(nifti.path_sc) != 0, arr.ind = TRUE) %>% 
       as_tibble() %>% 
       rename(x = dim1, y = dim2, z = dim3) %>% 
       mutate(voxel_num = 1:n()) %>% 
@@ -541,7 +514,7 @@ targets_niftis <- list(
         filter(pval < q_cutoff)
       
       write_statmap_nifti(metric_voxels = voxel_values,
-                          nifti_mask = nifti.mask_sc,
+                          mask_path = nifti.path_sc,
                           out_path = "/home/data/eccolab/studyforrest-data-phase2/SC_pls_r_ring_expand_flynet_p005.nii")
     },
     format = "file"
