@@ -42,11 +42,12 @@ plan(batchtools_slurm,
      resources = list(ntasks = 1L,
                       ncpus = n_slurm_cpus,
                       # nodelist = "node1",
+                      exclude = "gpu2,node3",
                       # walltime 86400 for 24h (partition day-long)
                       # walltime 1800 for 30min (partition short)
                       walltime = 1800L,
                       # Please be mindful this is not THAT much. No honker dfs pls
-                      memory = 250L,
+                      memory = 500L,
                       partition = "short"))
 # These parameters are relevant later inside the permutation testing targets
 n_batches <- 50
@@ -235,19 +236,21 @@ target_rsplit_flynet_ckvids <- tar_target(
   }
 )
 
-target_preds_flynet_ckvids <- tar_target(
-  name = preds_flynet_ckvids,
-  command = {
-    discrim_recipe <- rsplit_flynet_ckvids %>% 
-      training() %>% 
-      get_discrim_recipe()
-    
-    discrim_recipe %>% 
-      get_discrim_workflow() %>% 
-      fit(data = training(rsplit_flynet_ckvids)) %>% 
-      get_discrim_preds_from_trained_model(in_recipe = discrim_recipe,
-                                           test_data = testing(rsplit_flynet_ckvids))
-  }
+targets_preds_misc <- list(
+  tar_target(
+    name = preds_flynet_ckvids,
+    command = {
+      discrim_recipe <- rsplit_flynet_ckvids %>% 
+        training() %>% 
+        get_discrim_recipe()
+      
+      discrim_recipe %>% 
+        get_discrim_workflow() %>% 
+        fit(data = training(rsplit_flynet_ckvids)) %>% 
+        get_discrim_preds_from_trained_model(in_recipe = discrim_recipe,
+                                             test_data = testing(rsplit_flynet_ckvids))
+    }
+  )
 )
 
 target_rsplit_emonet.fc7_ckvids <- tar_target(
@@ -310,6 +313,50 @@ target_partial.r2.confusions_bothnets_ckvids <- tar_target(
   }
 )
 
+targets_stats_misc <- list(
+  tar_target(
+    name = cor.pred_ckvids,
+    command = preds_flynet_ckvids %>% 
+      bind_rows(flynet = .,
+                emonet = preds.videowise_emonet_ckvids,
+                .id = "model_type") %>% 
+      select(model_type, video, emotion_obs, starts_with(".pred")) %>%
+      pivot_longer(cols = starts_with(".pred"),
+                   names_to = "class",
+                   values_to = "prob") %>% 
+      pivot_wider(names_from = model_type,
+                  values_from = prob,
+                  names_prefix = "prob_") %$% 
+      cor(prob_flynet, prob_emonet)
+  ),
+  tar_target(
+    name = pre.auc.by.category_bothnets_ckvids,
+    command = bind_rows(flynet = preds_flynet_ckvids, 
+                        emonet = preds.videowise_emonet_ckvids, 
+                        .id = "model_type") %>% 
+      pivot_longer(cols = starts_with(".pred"), 
+                   names_to = "this_emotion", 
+                   values_to = "classifier_prob", 
+                   names_prefix = ".pred_") %>% 
+      nest(probs = -c(model_type, this_emotion)) %>% 
+      mutate(probs = map2(probs, this_emotion, 
+                          \(x1, x2) mutate(x1, 
+                                           across(c(emotion_obs, emotion_pred), 
+                                                  \(y) fct_collapse(y, this_emotion = x2, other_level = "other")
+                                           )
+                          )
+      )
+      ) %>% 
+      unnest(probs)
+  ),
+  tar_target(
+    name = auc.by.category_bothnets_ckvids,
+    command = pre.auc.by.category_bothnets_ckvids %>% 
+      group_by(model_type, this_emotion) %>% 
+      roc_auc(truth = emotion_obs, classifier_prob)
+  )
+)
+
 ## beh permutation testing ----
 
 # I have returned to tar_rep...
@@ -322,22 +369,40 @@ target_partial.r2.confusions_bothnets_ckvids <- tar_target(
 # because we only watn to call perm_beh_metrics once per iteration
 # to minimize the number of times the constant ratings CSV gets read in
 
-target_perms.metrics_bothnets_ckvids <- tar_rep(
-  name = perms_bothnets_ckvids,
-  command = perm_beh_metrics(in_preds_flynet = preds_flynet_ckvids,
-                             in_preds_emonet = preds.videowise_emonet_ckvids,
-                             truth_col = emotion_obs,
-                             estimate_col = emotion_pred,
-                             pred_prefix = ".pred", 
-                             path_ratings = ratings_ck2017, 
-                             path_ids_train = ids.train_kragel2019,
-                             times = n_reps_per_batch) %>% 
-    select(-splits),
-  batches = n_batches,
-  storage = "worker",
-  retrieval = "worker"
+targets_perms <- list(
+  tar_rep(
+    name = perms_bothnets_ckvids,
+    command = resample_beh_metrics(in_preds_flynet = preds_flynet_ckvids,
+                                   in_preds_emonet = preds.videowise_emonet_ckvids,
+                                   truth_col = emotion_obs,
+                                   estimate_col = emotion_pred,
+                                   pred_prefix = ".pred", 
+                                   path_ratings = ratings_ck2017, 
+                                   path_ids_train = ids.train_kragel2019,
+                                   resample_type = "permute",
+                                   times = n_reps_per_batch) %>% 
+      select(-splits),
+    batches = n_batches,
+    storage = "worker",
+    retrieval = "worker"
+  ),
+  tar_rep(
+    name = boots_bothnets_ckvids,
+    command = resample_beh_metrics(in_preds_flynet = preds_flynet_ckvids,
+                                   in_preds_emonet = preds.videowise_emonet_ckvids,
+                                   truth_col = emotion_obs,
+                                   estimate_col = emotion_pred,
+                                   pred_prefix = ".pred", 
+                                   path_ratings = ratings_ck2017, 
+                                   path_ids_train = ids.train_kragel2019,
+                                   resample_type = "bootstrap",
+                                   times = n_reps_per_batch) %>% 
+      select(-splits),
+    batches = n_batches,
+    storage = "worker",
+    retrieval = "worker"
+  )
 )
-
 # doing this for 2x the usual number of permutations, with fewer batch forks,
 # because the operation is fairly light so I want to minimize batch forks to keep the stuff trackable
 target_perms.partial.r2_bothnets_ckvids <- tar_rep(
@@ -378,11 +443,176 @@ target_perms.partial.r2_bothnets_ckvids <- tar_rep(
               fear_no_arousal = fear_no_arousal,
               .id = "outcome") %>% 
       rename(partial.r2_flynet = partial.r2_x1,
-             partial.r2_emonet = partial.r2_x2)
+             partial.r2_emonet = partial.r2_x2) %>% 
+      select(-splits)
   },
   batches = n_batches / 10,
   storage = "worker",
   retrieval = "worker"
+)
+
+targets_perm_misc <- list(
+  tar_target(
+    name = perms_cor.pred_ckvids,
+    # Basically, shuffle the video labels for one of the models
+    # bind them onto the true labels for the other model
+    # pivot and correlate
+    command = preds_flynet_ckvids %>% 
+      left_join(preds.videowise_emonet_ckvids,
+                by = c("video", "emotion_obs"),
+                suffix = c("_flynet", "_emonet")) %>% 
+      select(video, emotion_obs, starts_with(".pred")) %>% 
+      permutations(ends_with("_flynet"), times = n_batches * n_reps_per_batch) %>% 
+      mutate(correlation = map_dbl(splits,
+                                   \(x) x %>% 
+                                     analysis() %>% 
+                                     # puts it longer by emotion category but keeps it wide by model type
+                                     pivot_longer(cols = starts_with(".pred"),
+                                                  names_to = c("class", ".value"),
+                                                  names_sep = -6L) %$% 
+                                     cor(flynet, emonet),
+                                   .progress = "permuting correlation bw flynet/emonet preds")) %>% 
+      select(-splits)
+  ),
+  tar_rep(
+    name = boots_auc.by.category_bothnets_ckvids,
+    command = left_join(preds_flynet_ckvids %>% 
+                          select(-censored, -emotion_pred), 
+                        preds.videowise_emonet_ckvids %>% 
+                          select(-emotion_pred),
+                        by = c("video", "emotion_obs"),
+                        suffix = c("_flynet", "_emonet")) %>% 
+      bootstraps(times = n_reps_per_batch * 5) %>% 
+      mutate(.metrics = map(splits,
+                            \(x) x %>% 
+                              analysis() %>% 
+                              pivot_longer(cols = starts_with(".pred"), 
+                                           names_to = c(NA, "this_emotion", "model_type"), 
+                                           values_to = "classifier_prob", 
+                                           names_sep = "_") %>% 
+                              nest(probs = -c(model_type, this_emotion)) %>% 
+                              mutate(probs = map2(probs, this_emotion, 
+                                                  \(x1, x2) mutate(x1, 
+                                                                   emotion_obs = fct_collapse(emotion_obs, this_emotion = x2, other_level = "other")
+                                                                   )
+                                                  )
+                              ) %>% 
+                              unnest(probs) %>% 
+                              group_by(model_type, this_emotion) %>% 
+                              roc_auc(truth = emotion_obs, classifier_prob),
+                            .progress = "bootstrapping AUC by emo category")) %>% 
+      select(-splits),
+    batches = n_batches / 5,
+    storage = "worker",
+    retrieval = "worker"
+  ),
+  tar_rep(
+    name = perms_auc.by.category_bothnets_ckvids,
+    command = left_join(preds_flynet_ckvids %>% 
+                          select(-censored, -emotion_pred), 
+                        preds.videowise_emonet_ckvids %>% 
+                          select(-emotion_pred),
+                        by = c("video", "emotion_obs"),
+                        suffix = c("_flynet", "_emonet")) %>% 
+      permutations(emotion_obs, times = n_reps_per_batch * 5) %>% 
+      mutate(.metrics = map(splits,
+                            \(x) x %>% 
+                              analysis() %>% 
+                              pivot_longer(cols = starts_with(".pred"), 
+                                           names_to = c(NA, "this_emotion", "model_type"), 
+                                           values_to = "classifier_prob", 
+                                           names_sep = "_") %>% 
+                              nest(probs = -c(model_type, this_emotion)) %>% 
+                              mutate(probs = map2(probs, this_emotion, 
+                                                  \(x1, x2) mutate(x1, 
+                                                                   emotion_obs = fct_collapse(emotion_obs, this_emotion = x2, other_level = "other")
+                                                  )
+                              )
+                              ) %>% 
+                              unnest(probs) %>% 
+                              group_by(model_type, this_emotion) %>% 
+                              roc_auc(truth = emotion_obs, classifier_prob),
+                            .progress = "permuting AUC by emo category")) %>% 
+      select(-splits),
+    batches = n_batches / 5,
+    storage = "worker",
+    retrieval = "worker"
+  )
+)
+
+targets_perm_results <- list(
+  tar_target(
+    name = perm.pvals_model.acc_ckvids,
+    command = {
+      class_accuracies <- bind_rows(flynet = preds_flynet_ckvids,
+                                    emonet = preds.videowise_emonet_ckvids,
+                                    .id = "model_type") %>% 
+        group_by(model_type) %>% 
+        metrics(truth = emotion_obs,
+                estimate = emotion_pred,
+                starts_with(".pred"))
+      
+      perms_bothnets_ckvids %>% 
+        select(starts_with(".metrics")) %>% 
+        pivot_longer(starts_with(".metrics"),
+                     names_to = "model_type",
+                     values_to = ".metrics",
+                     names_prefix = ".metrics_") %>% 
+        unnest(.metrics) %>% 
+        rename(.estimate_perm = .estimate) %>% 
+        left_join(class_accuracies, by = c("model_type", ".metric", ".estimator")) %>% 
+        group_by(model_type, .metric) %>% 
+        # Carrying the accuracy value through so we can plot everything through this df alone
+        summarize(accuracy = mean(.estimate),
+                  pval = (sum(.estimate_perm >= .estimate) + 1) / (n() + 1)) %>% 
+        mutate(pval_text = glue::glue("p = {signif(pval, digits = 2)}"))
+    }
+  ),
+  tar_target(
+    name = perm.pvals_auc.by.category_bothnets_ckvids,
+    command = {
+      tau_real <- auc.by.category_bothnets_ckvids %>% 
+        pivot_wider(names_from = model_type, values_from = .estimate) %>%
+        summarize(tau_real = cor(flynet, emonet, method = "kendall")) %>% 
+        pull(tau_real)
+      
+      perms_auc.by.category_bothnets_ckvids %>% 
+        unnest(.metrics) %>% 
+        pivot_wider(names_from = model_type, values_from = .estimate) %>% 
+        group_by(tar_batch, tar_rep, id) %>% 
+        summarize(tau_perm = cor(flynet, emonet, method = "kendall"),
+                  .groups = "drop") %>% 
+        mutate(tau_real = tau_real) %>% 
+        summarize(tau = mean(tau_real),
+                  pval_upper = (sum(tau_perm > tau_real) + 1) / (n() + 1),
+                  pval_lower = (sum(tau_perm < tau_real) + 1) / (n() + 1))
+      }
+  ),
+  tar_target(
+    name = perm.pvals_cor.pred_ckvids,
+    command = perms_cor.pred_ckvids %>% 
+      rename(correlation_perm = correlation) %>% 
+      mutate(correlation_real = cor.pred_ckvids) %>% 
+      summarize(correlation = mean(correlation_real),
+                pval = (sum(correlation_perm > correlation_real) + 1) / (n() + 1))
+  ),
+  tar_target(
+    name = perm.pvals_partial.r2_bothnets_ckvids,
+    command = perms.partial.r2_bothnets_ckvids %>% 
+      select(outcome, id, starts_with("partial.r2")) %>% 
+      # because the real values are long by flynet/emonet
+      pivot_longer(cols = starts_with("partial.r2"),
+                   names_to = "model_type",
+                   values_to = "partial.r2_perm",
+                   names_prefix = "partial.r2_") %>% 
+      left_join(partial.r2.confusions_bothnets_ckvids %>% 
+                  rename(partial.r2_real = partial.r2) %>% 
+                  mutate(term = str_sub(term, start = 6L)),
+                by = c("outcome", "model_type" = "term")) %>% 
+      group_by(outcome, model_type) %>% 
+      summarize(partial.r2 = mean(partial.r2_real),
+                pval = (sum(partial.r2_perm > partial.r2_real) + 1) / (n() + 1))
+  )
 )
 
 ## long-form confusions and distances ----
@@ -435,116 +665,260 @@ target_mds.coords_ckvids <- tar_target(
 
 ## plotzzz ----
 
-target_plot_model.acc_ckvids <- tar_target(
-  name = plot_model.acc_ckvids,
-  command = {
-    class_accuracies <- bind_rows(flynet = preds_flynet_ckvids,
-                                  emonet = preds.videowise_emonet_ckvids,
-                                  .id = "model_type") %>% 
-      group_by(model_type) %>% 
-      accuracy(truth = emotion_obs, estimate = emotion_pred)
-    
-    class_accuracy_pvals <- perms_bothnets_ckvids %>% 
-      select(starts_with(".metrics")) %>% 
-      pivot_longer(starts_with(".metrics"),
-                   names_to = "model_type",
-                   values_to = ".metrics",
-                   names_prefix = ".metrics_") %>% 
-      unnest(.metrics) %>% 
-      rename(.estimate_perm = .estimate) %>% 
-      left_join(class_accuracies, by = "model_type") %>% 
-      group_by(model_type) %>% 
-      # Carrying the accuracy value through so we can plot everything through this df alone
-      summarize(accuracy = mean(.estimate),
-                pval = (sum(.estimate_perm >= .estimate) + 1) / (n() + 1)) %>% 
-      mutate(pval_text = glue::glue("p = {signif(pval, digits = 2)}"))
-    
-    class_accuracy_pvals %>% 
+targets_plots <- list(
+  tar_target(
+    name = plot_model.acc_ckvids,
+    command = perm.pvals_model.acc_ckvids %>% 
+      filter(.metric == "accuracy") %>% 
+      mutate(pval_text = if_else(model_type == "emonet", "p < .001", as.character(pval_text))) %>% 
       ggplot(aes(x = model_type, y = accuracy, fill = model_type)) + 
       geom_col() +
-      geom_text(aes(label = pval_text), data = class_accuracy_pvals, nudge_y = .01) +
+      geom_text(aes(label = pval_text), nudge_y = .01) +
       geom_hline(yintercept = .05, linetype = "dotted") +
-      guides(fill = "none") +
+      guides(fill = "none",
+             x = guide_axis(angle = 30)) +
       labs(x = "Model type", y = "20-way emotion classification accuracy")
-  }
-)
-
-target_plot_model.acc.by.category_ckvids <- tar_target(
-  name = plot_model.acc.by.category_ckvids,
-  command = {
-    flynet_acc_by_category_order <- preds_flynet_ckvids %>% 
-      pivot_longer(cols = starts_with(".pred"), 
-                   names_to = "this_emotion", 
-                   values_to = "classifier_prob", 
-                   names_prefix = ".pred_") %>% 
-      nest(probs = -this_emotion) %>% 
-      mutate(probs = map2(probs, this_emotion, 
-                          \(x1, x2) mutate(x1, 
-                                           across(c(emotion_obs, emotion_pred), 
-                                                  \(y) fct_collapse(y, this_emotion = x2, other_level = "other")
-                                           )
-                          )
-      )
-      ) %>% 
-      unnest(probs) %>% 
-      group_by(this_emotion) %>% 
-      roc_auc(truth = emotion_obs, classifier_prob) %>% 
-      arrange(.estimate) %>% 
-      pull(this_emotion)
-    
-    bind_rows(flynet = preds_flynet_ckvids, 
-              emonet = preds.videowise_emonet_ckvids, 
-              .id = "model_type") %>% 
-      pivot_longer(cols = starts_with(".pred"), 
-                   names_to = "this_emotion", 
-                   values_to = "classifier_prob", 
-                   names_prefix = ".pred_") %>% 
-      nest(probs = -c(model_type, this_emotion)) %>% 
-      mutate(probs = map2(probs, this_emotion, 
-                          \(x1, x2) mutate(x1, 
-                                           across(c(emotion_obs, emotion_pred), 
-                                                  \(y) fct_collapse(y, this_emotion = x2, other_level = "other")
-                                                  )
-                                           )
-                          )
-             ) %>% 
-      unnest(probs) %>% 
-      group_by(model_type, this_emotion) %>% 
-      roc_auc(truth = emotion_obs, classifier_prob) %>% 
-      mutate(.estimate = if_else(model_type == "emonet", -.estimate, .estimate)) %>% 
-      ggplot(aes(x = .estimate, y = factor(this_emotion, levels = flynet_acc_by_category_order), fill = model_type)) + 
-      geom_col(position = "identity") +
-      geom_vline(xintercept = c(-.5, .5), linetype = "dotted") +
-      # Bc the funnel-style plot must be hacked by setting one condition to negative values to flip the bars
-      scale_x_continuous(labels = \(x) abs(x)) +
-      # For thy fearful symmetry
-      expand_limits(x = c(-1, 1)) +
-      labs(x = "area under ROC curve", y = "Emotion category", fill = "Which model?")
-  }
-)
-
-target_plot.confusion.flynet_ckvids <- tar_target(
-  name = plot.confusion.flynet_ckvids,
-  command = confusions_ckvids %>% 
+  ),
+  tar_target(
+    name = plot_model.acc.by.category_ckvids,
+    command = {
+      flynet_acc_by_category_order <- preds_flynet_ckvids %>% 
+        pivot_longer(cols = starts_with(".pred"), 
+                     names_to = "this_emotion", 
+                     values_to = "classifier_prob", 
+                     names_prefix = ".pred_") %>% 
+        nest(probs = -this_emotion) %>% 
+        mutate(probs = map2(probs, this_emotion, 
+                            \(x1, x2) mutate(x1, 
+                                             across(c(emotion_obs, emotion_pred), 
+                                                    \(y) fct_collapse(y, this_emotion = x2, other_level = "other")
+                                             )
+                            )
+        )
+        ) %>% 
+        unnest(probs) %>% 
+        group_by(this_emotion) %>% 
+        roc_auc(truth = emotion_obs, classifier_prob) %>% 
+        arrange(.estimate) %>% 
+        pull(this_emotion)
+      
+      auc.by.category_bothnets_ckvids %>% 
+        mutate(.estimate = if_else(model_type == "emonet", -.estimate, .estimate)) %>% 
+        ggplot(aes(x = .estimate, y = factor(this_emotion, levels = flynet_acc_by_category_order), fill = model_type)) + 
+        geom_col(position = "identity") +
+        geom_vline(xintercept = c(-.5, .5), linetype = "dotted") +
+        # Bc the funnel-style plot must be hacked by setting one condition to negative values to flip the bars
+        scale_x_continuous(labels = \(x) abs(x)) +
+        # For thy fearful symmetry
+        expand_limits(x = c(-1, 1)) +
+        labs(x = "area under ROC curve", y = "Emotion category", fill = "Which model?")
+    }
+  ),
+  tar_target(
+    name = plot_diff.valence.by.flynet_ckvids,
+    command = {
+      half_confusions <- confusions_ckvids %>% 
+        halve_confusions()
+      
+      half_confusions %>% 
+        mutate(diff_valence_resid = lm(diff_valence ~ dist_emonet, data = half_confusions) %>% 
+                 pluck("residuals")) %>% 
+        ggplot(aes(x = dist_flynet, y = diff_valence_resid)) + 
+        geom_point() + 
+        geom_smooth(method = "lm", color = "#41b6e6") +
+        labs(x = "Between-category looming\nrepresentational distance",
+             y = "Between-category valence\ndistance (residualized)")
+    }
+  ),
+  tar_target(
+    name = plot_diff.arousal.by.flynet_ckvids,
+    command = {
+      half_confusions <- confusions_ckvids %>% 
+        halve_confusions()
+      
+      half_confusions %>% 
+        mutate(diff_arousal_resid = lm(diff_arousal ~ dist_emonet, data = half_confusions) %>% 
+                 pluck("residuals")) %>% 
+        ggplot(aes(x = dist_flynet, y = diff_arousal_resid)) + 
+        geom_point() + 
+        geom_smooth(method = "lm", color = "#41b6e6") +
+        labs(x = "Between-category looming\nrepresentational distance",
+             y = "Between-category arousal\ndistance (residualized)")
+    }
+  ),
+  tar_target(
+    name = plot.confusion.flynet_ckvids,
+    command = confusions_ckvids %>% 
       plot_confusion_matrix(row_col = emotion_obs, col_col = emotion_pred, fill_col = dist_flynet)
+  ),
+  tar_target(
+    name = plot.confusion.emonet_ckvids,
+    command = confusions_ckvids %>% 
+      plot_confusion_matrix(row_col = emotion_obs, col_col = emotion_pred, fill_col = dist_emonet)
+  ),
+  tar_target(
+    name = plot.confusion.valence_ckvids,
+    command = confusions_ckvids %>% 
+      plot_confusion_matrix(row_col = emotion_obs, col_col = emotion_pred, fill_col = diff_valence)
+  ),
+  tar_target(
+    name = plot.confusion.arousal_ckvids,
+    command = confusions_ckvids %>% 
+      plot_confusion_matrix(row_col = emotion_obs, col_col = emotion_pred, fill_col = diff_arousal)
+  )
 )
 
-target_plot.confusion.emonet_ckvids <- tar_target(
-  name = plot.confusion.emonet_ckvids,
-  command = confusions_ckvids %>% 
-    plot_confusion_matrix(row_col = emotion_obs, col_col = emotion_pred, fill_col = dist_emonet)
-)
-
-target_plot.confusion.valence_ckvids <- tar_target(
-  name = plot.confusion.valence_ckvids,
-  command = confusions_ckvids %>% 
-    plot_confusion_matrix(row_col = emotion_obs, col_col = emotion_pred, fill_col = diff_valence)
-)
-
-target_plot.confusion.arousal_ckvids <- tar_target(
-  name = plot.confusion.arousal_ckvids,
-  command = confusions_ckvids %>% 
-    plot_confusion_matrix(row_col = emotion_obs, col_col = emotion_pred, fill_col = diff_arousal)
+targets_figs <- list(
+  tar_target(
+    name = fig_subjective_0564_category.probs,
+    command = (preds_flynet_ckvids %>% 
+                 filter(video == "0564.mp4") %>% 
+                 select(video, starts_with(".pred")) %>% 
+                 pivot_longer(cols = starts_with(".pred"), 
+                              names_to = "emotion_pred", 
+                              values_to = "class_prob", 
+                              names_prefix = ".pred_") %>% 
+                 # since it's a schematic plot
+                 filter(class_prob >= .001) %>% 
+                 ggplot(aes(x = class_prob, y = fct_rev(emotion_pred))) + 
+                 geom_col(fill = "#41b6e6") + 
+                 labs(x = "Model-estimated category probability", y = NULL) +
+                 theme_bw(base_size = 12) +
+                 theme(plot.background = element_blank())) %>% 
+      ggsave(filename = "subjective_0564_category.probs.svg",
+             plot = .,
+             path = here::here("ignore", "figs"),
+             width = 1500,
+             height = 600,
+             units = "px")
+  ),
+  tar_target(
+    name = fig_model.acc_ckvids,
+    command = (plot_model.acc_ckvids +
+                 scale_x_discrete(labels = c("Static object features", "Looming motion")) + 
+                 scale_fill_viridis_d(begin = 0.3, end = 0.7, option = "magma") + 
+                 guides(fill = "none") +
+                 labs(x = NULL, y = "20-way emotion classification accuracy") + 
+                 theme_bw(base_size = 12) +
+                 theme(plot.background = element_blank())) %>% 
+      ggsave(filename = "subjective_model.acc_overall.svg",
+             plot = .,
+             path = here::here("ignore", "figs"),
+             width = 800,
+             height = 1200,
+             units = "px")
+  ),
+  tar_target(
+    name = fig_model.acc.by.category_ckvids,
+    (plot_model.acc.by.category_ckvids +
+       scale_fill_viridis_d(begin = 0.3, end = 0.7, option = "magma") + 
+       annotate(geom = "text", x = -1, y = 11, label = "Static object features", angle = 90, size = 3) +
+       annotate(geom = "text", x = 1, y = 11, label = "Looming motion", angle = 270, size = 3) +
+       guides(fill = "none") +
+       labs(y = NULL) +
+       theme_bw(base_size = 12) +
+       theme(plot.background = element_blank())) %>% 
+      ggsave(filename = "subjective_model.acc_category.svg",
+           plot = .,
+           path = here::here("ignore", "figs"),
+           width = 1600,
+           height = 1000,
+           units = "px")
+  ),
+  tar_target(
+    name = fig_diff.valence.by.flynet_ckvids,
+    command = (plot_diff.valence.by.flynet_ckvids +
+                 theme_bw(base_size = 12) +
+                 theme(plot.background = element_blank())) %>% 
+      ggsave(filename = "subjective_diff.valence.by.flynet.svg",
+             plot = .,
+             path = here::here("ignore", "figs"),
+             width = 1200,
+             height = 1200,
+             units = "px"),
+    format = "file"
+  ),
+  tar_target(
+    name = fig_diff.arousal.by.flynet_ckvids,
+    command = (plot_diff.arousal.by.flynet_ckvids +
+                 theme_bw(base_size = 12) +
+                 theme(plot.background = element_blank())) %>% 
+      ggsave(filename = "subjective_diff.arousal.by.flynet.svg",
+             plot = .,
+             path = here::here("ignore", "figs"),
+             width = 1200,
+             height = 1200,
+             units = "px"),
+    format = "file"
+  ),
+  tar_target(
+    fig_confusion.emonet_ckvids,
+    command = (plot.confusion.emonet_ckvids +
+                 labs(x = NULL, y = NULL, fill = "Distance\n(1 - r)") +
+                 scale_fill_viridis_c(option = "magma") +
+                 theme_bw(base_size = 12) +
+                 theme(plot.background = element_blank(),
+                       legend.background = element_blank(),
+                       aspect.ratio = 1)) %>% 
+      ggsave(filename = "subjective_confusion.emonet.png",
+             plot = .,
+             path = here::here("ignore", "figs"),
+             width = 2000,
+             height = 1600,
+             units = "px"),
+    format = "file"
+  ),
+  tar_target(
+    fig_confusion.flynet_ckvids,
+    command = (plot.confusion.flynet_ckvids +
+                 labs(x = NULL, y = NULL, fill = "Distance\n(1 - r)") +
+                 scale_fill_viridis_c(option = "magma") +
+                 theme_bw(base_size = 12) +
+                 theme(plot.background = element_blank(),
+                       legend.background = element_blank(),
+                       aspect.ratio = 1)) %>% 
+      ggsave(filename = "subjective_confusion.flynet.png",
+             plot = .,
+             path = here::here("ignore", "figs"),
+             width = 2000,
+             height = 1600,
+             units = "px"),
+    format = "file"
+  ),
+  tar_target(
+    fig_confusion.valence_ckvids,
+    command = (plot.confusion.valence_ckvids +
+                 labs(x = NULL, y = NULL, fill = "Distance\n(9-pt scale units)") +
+                 scale_fill_viridis_c(option = "magma") +
+                 theme_bw(base_size = 12) +
+                 theme(plot.background = element_blank(),
+                       legend.background = element_blank(),
+                       aspect.ratio = 1)) %>% 
+      ggsave(filename = "subjective_confusion.valence.png",
+             plot = .,
+             path = here::here("ignore", "figs"),
+             width = 2000,
+             height = 1600,
+             units = "px"),
+    format = "file"
+  ),
+  tar_target(
+    fig_confusion.arousal_ckvids,
+    command = (plot.confusion.arousal_ckvids +
+                 labs(x = NULL, y = NULL, fill = "Distance\n(9-pt scale units)") +
+                 scale_fill_viridis_c(option = "magma") +
+                 theme_bw(base_size = 12) +
+                 theme(plot.background = element_blank(),
+                       legend.background = element_blank(),
+                       aspect.ratio = 1)) %>% 
+      ggsave(filename = "subjective_confusion.arousal.png",
+             plot = .,
+             path = here::here("ignore", "figs"),
+             width = 2000,
+             height = 1600,
+             units = "px"),
+    format = "file"
+  )
 )
 
 ## the list of all the target metanames ----
@@ -566,17 +940,16 @@ list(target_ratings_ck2017,
      target_weights_flynet,
      target_activations_flynet_ckvids,
      target_rsplit_flynet_ckvids,
-     target_preds_flynet_ckvids,
+     targets_preds_misc,
      target_coefs.confusions_bothnets_ckvids,
      target_partial.r2.confusions_bothnets_ckvids,
-     target_perms.metrics_bothnets_ckvids,
+     targets_stats_misc,
+     targets_perms,
      target_perms.partial.r2_bothnets_ckvids,
+     targets_perm_misc,
+     targets_perm_results,
      target_confusions_ckvids,
      target_mds.coords_ckvids,
-     target_plot_model.acc_ckvids,
-     target_plot_model.acc.by.category_ckvids,
-     target_plot.confusion.flynet_ckvids,
-     target_plot.confusion.emonet_ckvids,
-     target_plot.confusion.valence_ckvids,
-     target_plot.confusion.arousal_ckvids
+     targets_plots,
+     targets_figs
 )
