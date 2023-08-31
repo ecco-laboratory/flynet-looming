@@ -488,7 +488,7 @@ targets_figs <- list(
   ),
   tar_target(
     name = fig_boxplot_cv.r_studyforrest,
-    command = ggsave(here::here("ignore", "figs", "ohbm2023_boxplot_cv.r_studyforrest.png"),
+    command = ggsave(here::here("ignore", "figs", "retinotopy_boxplot_cv.r_studyforrest.png"),
                      plot = boxplot_cv.r_studyforrest + 
                        theme_bw(base_size = 14) +
                        theme(legend.position = 0:1,
@@ -496,9 +496,9 @@ targets_figs <- list(
                              legend.background = element_blank(),
                              legend.title = element_blank(),
                              plot.background = element_rect(fill = "transparent")),
-                     width = 8,
-                     height = 6,
-                     units = "in"),
+                     width = 1600,
+                     height = 1200,
+                     units = "px"),
     format = "file"
   )
 )
