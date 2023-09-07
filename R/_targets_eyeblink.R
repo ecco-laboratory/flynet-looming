@@ -355,6 +355,24 @@ targets_plots <- list(
             legend.background = element_blank()),
   ),
   tar_target(
+    name = plot_hit.by.time,
+    command = blink.counts_by_hit.prob %>% 
+      filter(frame_num_shifted >= 125) %>% 
+      # .033 to get it in seconds, not milliseconds
+      mutate(time = (frame_num_shifted - max(frame_num_shifted)) * .033) %>% 
+      ggplot(aes(x = time, y = hit_prob, color = factor(ttc))) + 
+      geom_line(aes(group = ttc)) + 
+      scale_color_viridis_d(option = "magma") + 
+      guides(color = guide_legend(override.aes = list(size = 5))) + 
+      labs(x = "Pre-collision time (s)",
+           y = "Estimated P(hit)",
+           color = "Time-to-contact (s)") +
+      theme_bw() +
+      theme(legend.position = c(0, 1), 
+            legend.justification = c(0, 1), 
+            legend.background = element_blank()),
+  ),
+  tar_target(
     name = plot_blink.by.hit,
     command = blink.counts_by_hit.prob %>% 
       filter(frame_num_shifted >= 125) %>% 
@@ -401,6 +419,22 @@ targets_figs <- list(
              path = here::here("ignore", "figs"),
              width = 1200,
              height = 600,
+             units = "px"),
+    format = "file"
+  ),
+  tar_target(
+    name = fig_hit.by.time,
+    command = (plot_hit.by.time +
+                 theme_bw(base_size = 12) +
+                 theme(legend.position = c(0, 1), 
+                       legend.justification = c(0, 1), 
+                       legend.background = element_blank(),
+                       plot.background = element_blank())) %>% 
+      ggsave(filename = "eyeblink_hit.by.time.png",
+             plot = .,
+             path = here::here("ignore", "figs"),
+             width = 1800,
+             height = 1200,
              units = "px"),
     format = "file"
   ),
