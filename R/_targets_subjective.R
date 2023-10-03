@@ -665,6 +665,31 @@ target_mds.coords_ckvids <- tar_target(
 
 ## plotzzz ----
 
+targets_plot_helpers <- list(
+  tar_target(
+    name = order_flynet_auc.by.category,
+    command = preds_flynet_ckvids %>% 
+      pivot_longer(cols = starts_with(".pred"), 
+                   names_to = "this_emotion", 
+                   values_to = "classifier_prob", 
+                   names_prefix = ".pred_") %>% 
+      nest(probs = -this_emotion) %>% 
+      mutate(probs = map2(probs, this_emotion, 
+                          \(x1, x2) mutate(x1, 
+                                           across(c(emotion_obs, emotion_pred), 
+                                                  \(y) fct_collapse(y, this_emotion = x2, other_level = "other")
+                                           )
+                          )
+      )
+      ) %>% 
+      unnest(probs) %>% 
+      group_by(this_emotion) %>% 
+      roc_auc(truth = emotion_obs, classifier_prob) %>% 
+      arrange(.estimate) %>% 
+      pull(this_emotion)
+  )
+)
+
 targets_plots <- list(
   tar_target(
     name = plot_model.acc_ckvids,
@@ -681,30 +706,9 @@ targets_plots <- list(
   ),
   tar_target(
     name = plot_model.acc.by.category_ckvids,
-    command = {
-      flynet_acc_by_category_order <- preds_flynet_ckvids %>% 
-        pivot_longer(cols = starts_with(".pred"), 
-                     names_to = "this_emotion", 
-                     values_to = "classifier_prob", 
-                     names_prefix = ".pred_") %>% 
-        nest(probs = -this_emotion) %>% 
-        mutate(probs = map2(probs, this_emotion, 
-                            \(x1, x2) mutate(x1, 
-                                             across(c(emotion_obs, emotion_pred), 
-                                                    \(y) fct_collapse(y, this_emotion = x2, other_level = "other")
-                                             )
-                            )
-        )
-        ) %>% 
-        unnest(probs) %>% 
-        group_by(this_emotion) %>% 
-        roc_auc(truth = emotion_obs, classifier_prob) %>% 
-        arrange(.estimate) %>% 
-        pull(this_emotion)
-      
-      auc.by.category_bothnets_ckvids %>% 
+    command = auc.by.category_bothnets_ckvids %>% 
         mutate(.estimate = if_else(model_type == "emonet", -.estimate, .estimate)) %>% 
-        ggplot(aes(x = .estimate, y = factor(this_emotion, levels = flynet_acc_by_category_order), fill = model_type)) + 
+        ggplot(aes(x = .estimate, y = factor(this_emotion, levels = order_flynet_auc.by.category), fill = model_type)) + 
         geom_col(position = "identity") +
         geom_vline(xintercept = c(-.5, .5), linetype = "dotted") +
         # Bc the funnel-style plot must be hacked by setting one condition to negative values to flip the bars
@@ -712,7 +716,30 @@ targets_plots <- list(
         # For thy fearful symmetry
         expand_limits(x = c(-1, 1)) +
         labs(x = "area under ROC curve", y = "Emotion category", fill = "Which model?")
-    }
+  ),
+  tar_target(
+    name = plot_structure.coefs_flynet_ckvids,
+    command = preds_flynet_ckvids %>% 
+      left_join(rsplit_flynet_ckvids %>% 
+                  testing() %>% 
+                  select(-split, -starts_with("intercept")), 
+                by = c("video", "emotion_obs" = "emotion", "censored")) %>% 
+      pivot_longer(cols = starts_with(".pred"), 
+                   names_to = "pred_class", 
+                   values_to = "prob", 
+                   names_prefix = ".pred_") %>% 
+      pivot_longer(starts_with("slope"), 
+                   names_to = "unit_num", 
+                   values_to = "slope", 
+                   names_prefix = "slope_", 
+                   names_transform = list(unit_num = as.integer)) %>% 
+      group_by(pred_class, unit_num) %>% 
+      summarize(correlation = cor(prob, slope)) %>% 
+      mutate(unit_x = unit_num %% 16, unit_y = unit_num %/% 16) %>% 
+      ggplot(aes(x = unit_x, y = -unit_y, fill = correlation)) + 
+      geom_raster() + 
+      facet_wrap(~ factor(pred_class, levels = order_flynet_auc.by.category)) + 
+      scale_fill_viridis_c(option = "magma")
   ),
   tar_target(
     name = plot_diff.valence.by.flynet_ckvids,
