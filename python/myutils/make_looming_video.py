@@ -66,6 +66,11 @@ parser.add_argument(
     help="Type of motion? Looming (forwards) or receding (backwards)? Defaults to looming"
 )
 parser.add_argument(
+    '--reverse',
+    action='store_true',
+    help='Will return a REVERSED version of the trajectory if called.'
+)
+parser.add_argument(
     '--angle',
     default='eyelevel',
     type=str,
@@ -298,6 +303,11 @@ video_name = [
     'pause' + '{:02.1f}'.format(args['pausetime']), 
     'loom' + '{:02.1f}'.format(args['loomtime'])
 ]
+# add reversed to the file name and actually flip the frames, if applicable
+if args['reverse']:
+    video_name = video_name + ['reversed']
+    frames.reverse()
+
 video_name = '_'.join(video_name) + '.mp4'
 container = cv2.VideoWriter(
     os.path.join(args['outpath'], video_name),
