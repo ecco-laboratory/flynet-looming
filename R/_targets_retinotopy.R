@@ -18,7 +18,11 @@ tar_option_set(
   packages = c("mixOmics",
                "tidymodels",
                "plsmod",
-               "tidyverse",
+               "dplyr",
+               "forcats",
+               "tidyr",
+               "purrr",
+               "ggplot2",
                "magrittr",
                "RNifti",
                "crayon"), # packages that your targets need to run
@@ -436,6 +440,35 @@ targets_plots <- list(
                                              metrics_flynet_sc_studyforrest_by.run.type,
                                              metrics_flynet_v1_studyforrest,
                                              metrics_flynet_v1_studyforrest_by.run.type)
+  ),
+  tar_target(
+    name = heatmap_pls.beta_studyforrest_by.run.type,
+    command = pls_flynet_sc_studyforrest_by.run.type %>% 
+      select(fold_num, this_run_type, fits) %>% 
+      mutate(mean_unit_betas = map(fits, \(x) x %>% 
+                                     extract_fit_engine() %>% 
+                                     pluck("mat.c") %>% 
+                                     rowMeans())) %>% 
+      select(-fits) %>% 
+      unnest_longer(mean_unit_betas,
+                    values_to = "mean_beta",
+                    indices_to = "unit_num") %>% 
+      separate(unit_num, into = c(NA, "unit_num"), convert = TRUE) %>% 
+      mutate(unit_x = (unit_num-1) %% 16, unit_y = (unit_num-1) %/% 16) %>% 
+      group_by(this_run_type, unit_num, unit_x, unit_y) %>% 
+      summarize(mean_beta = mean(mean_beta), .groups = "drop") %>% 
+      mutate(this_run_type = fct_recode(this_run_type, 
+                                    "CW wedge" = "wedge_clock", 
+                                    "CCW wedge" = "wedge_counter", 
+                                    "Contracting ring" = "ring_contract", 
+                                    "Expanding ring" = "ring_expand")) %>% 
+      ggplot(aes(x = unit_x, y = -unit_y, fill = mean_beta)) + 
+      geom_raster() + 
+      scale_fill_viridis_c(option = "magma") + 
+      facet_wrap(~ this_run_type) +
+      labs(x = NULL,
+           y = NULL,
+           fill = "Encoding\nmodel beta")
   )
 )
 
@@ -467,6 +500,20 @@ targets_figs <- list(
                              legend.title = element_blank(),
                              plot.background = element_rect(fill = "transparent")),
                      width = 1600,
+                     height = 1200,
+                     units = "px"),
+    format = "file"
+  ),
+  tar_target(
+    name = fig_heatmap_pls.beta_studyforrest_by.run.type,
+    command = ggsave(here::here("ignore", "figs", "retinotopy_heatmap_pls.beta_studyforrest_by.run.type.png"),
+                     plot = heatmap_pls.beta_studyforrest_by.run.type + 
+                       theme_bw(base_size = 10) +
+                       theme(legend.background = element_blank(),
+                             plot.background = element_blank(),
+                             axis.text = element_blank(),
+                             aspect.ratio = 1),
+                     width = 1400,
                      height = 1200,
                      units = "px"),
     format = "file"

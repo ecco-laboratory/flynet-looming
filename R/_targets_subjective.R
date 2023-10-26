@@ -738,8 +738,11 @@ targets_plots <- list(
       mutate(unit_x = unit_num %% 16, unit_y = unit_num %/% 16) %>% 
       ggplot(aes(x = unit_x, y = -unit_y, fill = correlation)) + 
       geom_raster() + 
-      facet_wrap(~ factor(pred_class, levels = order_flynet_auc.by.category)) + 
-      scale_fill_viridis_c(option = "magma")
+      facet_wrap(~ factor(pred_class, levels = rev(order_flynet_auc.by.category))) + 
+      scale_fill_viridis_c(option = "magma") +
+      labs(x = NULL,
+           y = NULL,
+           fill = "Pearson's r")
   ),
   tar_target(
     name = plot_diff.valence.by.flynet_ckvids,
@@ -851,6 +854,22 @@ targets_figs <- list(
            width = 1600,
            height = 1000,
            units = "px")
+  ),
+  tar_target(
+    name = fig_structure.coefs_flynet_ckvids,
+    command = (plot_structure.coefs_flynet_ckvids +
+                 theme_bw(base_size = 12) +
+                 theme(axis.text = element_blank(),
+                       aspect.ratio = 1,
+                       plot.background = element_blank(),
+                       legend.background = element_blank())) %>% 
+      ggsave(filename = "subjective_structure.coefs_flynet.png",
+             plot = .,
+             path = here::here("ignore", "figs"),
+             width = 3000,
+             height = 2400,
+             units = "px"),
+    format = "file"
   ),
   tar_target(
     name = fig_diff.valence.by.flynet_ckvids,
@@ -977,6 +996,7 @@ list(target_ratings_ck2017,
      targets_perm_results,
      target_confusions_ckvids,
      target_mds.coords_ckvids,
+     targets_plot_helpers,
      targets_plots,
      targets_figs
 )
