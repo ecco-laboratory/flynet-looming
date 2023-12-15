@@ -30,23 +30,14 @@ plot_flynet_activations_convolved <- function (activations, run_types = NULL) {
   return (out)
 }
 
-plot_boxplot_cv_r_studyforrest <- function (metrics_flynet_sc,
-                                            metrics_flynet_sc_run,
-                                            metrics_flynet_v1,
-                                            metrics_flynet_v1_run) {
-  out <- bind_rows("Collision detection model, all stimuli" = metrics_flynet_sc,
-                   "Collision detection model, stim-specific" = metrics_flynet_sc_run,
-                   # "Group-average pRF model, all stimuli" = metrics_prf_sc,
-                   .id = "model_type") %>% 
-    bind_rows(SC = .,
-              V1 = bind_rows("Collision detection model, all stimuli" = metrics_flynet_v1,
-                             "Collision detection model, stim-specific" = metrics_flynet_v1_run,
-                             # "Group-average pRF model, all stimuli" = metrics_prf_v1,
-                             .id = "model_type"),
+plot_boxplot_cv_r_studyforrest <- function (metrics_sc,
+                                            metrics_v1) {
+  out <- bind_rows(SC = metrics_sc,
+                   V1 = metrics_v1,
               .id = "roi") %>% 
-    select(roi, model_type, perf) %>% 
+    select(roi, fit_type, model_type, perf) %>% 
     unnest(perf) %>% 
-    group_by(roi, model_type, stim_type, subj_num) %>% 
+    group_by(roi, fit_type, model_type, stim_type, subj_num) %>% 
     summarize(cv_r = mean(r_model), .groups = "drop") %>% 
     # must separately relevel and recode because recode doesn't change level order
     mutate(stim_type = fct_relevel(stim_type, 
@@ -60,15 +51,19 @@ plot_boxplot_cv_r_studyforrest <- function (metrics_flynet_sc,
                                   "Contracting ring" = "ring_contract", 
                                   "Expanding ring" = "ring_expand"),
            model_type = fct_relevel(model_type,
-                                    # "Group-average pRF model, all stimuli",
-                                    "Collision detection model, all stimuli",
-                                    "Collision detection model, stim-specific")) %>% 
-    ggplot(aes(x = stim_type, y = cv_r, fill = model_type)) + 
+                                    "Inverse tau",
+                                    "Eta",
+                                    "Inverse tau and eta",
+                                    "Collision detection model",
+                                    "Collision detection + inverse tau",
+                                    "Collision detection + eta",
+                                    "Collision detection + inverse tau and eta")) %>% 
+    ggplot(aes(x = model_type, y = cv_r, fill = fit_type, color = fit_type)) + 
     geom_hline(yintercept = 0, linetype = "dotted") + 
-    # geom_hline(yintercept = 0.1, linetype = "dotted", color = "gray60") + 
     geom_boxplot(alpha = 0.8) + 
-    # geom_jitter(alpha = 0.5, width = 0.1) + 
-    facet_grid(roi ~ .) +
+    # geom_line(aes(group = subj_num), alpha = 0.5) +
+    geom_point(alpha = 0.5) +
+    facet_grid(roi ~ stim_type) +
     guides(x = guide_axis(angle = 30), color = "none") +
     labs(x = "Retinotopic stimulus type", y = "Cross-validated r")
   
