@@ -42,7 +42,7 @@ plan(batchtools_slurm,
      resources = list(ntasks = 1L,
                       ncpus = n_slurm_cpus,
                       # nodelist = "node1",
-                      exclude = "gpu2,node3",
+                      # exclude = "gpu2,node3",
                       # walltime 86400 for 24h (partition day-long)
                       # walltime 1800 for 30min (partition short)
                       walltime = 1800L,
@@ -65,7 +65,7 @@ tar_source(c("R/model_flynet_affect.R",
 
 target_ratings_ck2017 <- tar_target(
   name = ratings_ck2017,
-  command = "/home/mthieu/Repos/CowenKeltner/metadata/video_ratings.csv",
+  command = "/home/mthieu/Repos/CowenKeltner/metadata/video_ratings_with_looming.csv",
   format = "file"
 )
 
@@ -229,7 +229,10 @@ target_activations_flynet_ckvids <- tar_target(
 target_rsplit_flynet_ckvids <- tar_target(
   name = rsplit_flynet_ckvids,
   command = {
-    activations <- get_flynet_activation_ck2017(activations_flynet_ckvids, classes_ck2017)
+    activations <- get_flynet_activation_ck2017(activations_flynet_ckvids, classes_ck2017) %>% 
+      left_join(read_csv(ratings_ck2017) %>% 
+                  select(video = Filename, looming = Looming),
+                by = "video")
     # Use pre-existing Kragel 2019 train-test split to make an rsample-compatible split object
     make_splits(x = filter(activations, split == "train"),
                 assessment = filter(activations, split == "test"))
@@ -250,6 +253,46 @@ targets_preds_misc <- list(
         get_discrim_preds_from_trained_model(in_recipe = discrim_recipe,
                                              test_data = testing(rsplit_flynet_ckvids))
     }
+  ),
+  tar_target(
+    name = glm_looming.flynet_ckvids,
+    command = {
+      ratings <- read_csv(ratings_ck2017) %>% 
+        rename(video = Filename, arousal = arousal...39)
+      
+      this_recipe <- recipe(head(ratings)) %>% 
+        update_role(arousal, valence, Fear, new_role = "predictor") %>% 
+        update_role(Looming, new_role = "outcome") %>% 
+        update_role(video, new_role = "ID") %>% 
+        step_normalize(all_predictors()) %>% 
+        step_bin2factor(all_outcomes(), ref_first = FALSE, skip = TRUE)
+      
+      workflow() %>% 
+        add_model(logistic_reg()) %>% 
+        add_recipe(this_recipe) %>% 
+        fit(data = ratings) %>%
+        extract_fit_engine()
+      }
+  ),
+  tar_target(
+    name = recipe_looming.flynet_ckvids,
+    command = rsplit_flynet_ckvids %>% 
+        training() %>% 
+        get_discrim_recipe(outcome_var = looming)
+  ),
+  tar_target(
+    name = pls_looming.flynet_ckvids,
+    command = recipe_looming.flynet_ckvids %>% 
+        get_discrim_workflow(discrim_engine = pls(mode = "classification",
+                                                  num_comp = 20L)) %>% 
+        fit(data = training(rsplit_flynet_ckvids))
+  ),
+  tar_target(
+    name = preds_looming.flynet_ckvids,
+    command = pls_looming.flynet_ckvids %>% 
+      get_discrim_preds_from_trained_model(in_recipe = recipe_looming.flynet_ckvids,
+                                           test_data = testing(rsplit_flynet_ckvids),
+                                           outcome_var = "looming")
   )
 )
 
@@ -290,7 +333,8 @@ target_coefs.confusions_bothnets_ckvids <- tar_target(
                                            lm_formulas = list(valence = diff_valence ~ dist_flynet + dist_emonet,
                                                               arousal = diff_arousal ~ dist_flynet + dist_emonet,
                                                               fear = diff_fear ~ dist_flynet + dist_emonet,
-                                                              fear_no_arousal = diff_fear ~ dist_flynet + dist_emonet + diff_arousal))
+                                                              fear_no_arousal = diff_fear ~ dist_flynet + dist_emonet + diff_arousal,
+                                                              looming = diff_looming ~ dist_flynet + dist_emonet))
   
 )
 
@@ -308,7 +352,9 @@ target_partial.r2.confusions_bothnets_ckvids <- tar_target(
             "fear", "dist_flynet", calc_partial_r2(half_confusions, "diff_fear", "dist_flynet", "dist_emonet"),
             "fear", "dist_emonet", calc_partial_r2(half_confusions, "diff_fear", "dist_emonet", "dist_flynet"),
             "fear_no_arousal", "dist_flynet", calc_partial_r2(half_confusions, "diff_fear", "dist_flynet", c("dist_emonet", "diff_arousal")),
-            "fear_no_arousal", "dist_emonet", calc_partial_r2(half_confusions, "diff_fear", "dist_emonet", c("dist_flynet", "diff_arousal"))
+            "fear_no_arousal", "dist_emonet", calc_partial_r2(half_confusions, "diff_fear", "dist_emonet", c("dist_flynet", "diff_arousal")),
+            "looming", "dist_flynet", calc_partial_r2(half_confusions, "diff_looming", "dist_flynet", "dist_emonet"),
+            "looming", "dist_emonet", calc_partial_r2(half_confusions, "diff_looming", "dist_emonet", "dist_flynet")
     )
   }
 )
@@ -363,13 +409,41 @@ targets_stats_misc <- list(
 # even though perm_beh_metrics() now takes finished predictions and only permutes the true outcomes
 # leaving the predictions (and effectively the training model) the same every time
 # models don't need to be refit, but AUC model accuracy takes a little while to estimate
-# (1 min per 100 iterations, ish) thus we actually can really gain from paralleling agian
+# (1 min per 100 iterations, ish) thus we actually can really gain from paralleling again
 # feed n_reps_per_batch directly into permutations()
 # instead of the reps argument of tar_rep
-# because we only watn to call perm_beh_metrics once per iteration
+# because we only want to call perm_beh_metrics once per iteration
 # to minimize the number of times the constant ratings CSV gets read in
 
 targets_perms <- list(
+  tar_target(
+    name = perms_looming.flynet_ckvids,
+    command = preds_looming.flynet_ckvids %>% 
+      permutations(permute = looming_obs, times = n_batches * n_reps_per_batch) %>% 
+      mutate(.metrics = map(splits, \(x) x %>% 
+                              analysis() %>% 
+                              metrics(truth = looming_obs, 
+                                      estimate = looming_pred, 
+                                      .pred_yes),
+                            .progress = "Bootstrapping Flynet to coded looming accuracy"
+      )
+      ) %>% 
+      select(-splits)
+  ),
+  tar_target(
+    name = boots_looming.flynet_ckvids,
+    command = preds_looming.flynet_ckvids %>% 
+      bootstraps(times = n_batches * n_reps_per_batch) %>% 
+      mutate(.metrics = map(splits, \(x) x %>% 
+                              analysis() %>% 
+                              metrics(truth = looming_obs, 
+                                      estimate = looming_pred, 
+                                      .pred_yes),
+                            .progress = "Bootstrapping Flynet to coded looming accuracy"
+                            )
+             ) %>% 
+      select(-splits)
+  ),
   tar_rep(
     name = perms_bothnets_ckvids,
     command = resample_beh_metrics(in_preds_flynet = preds_flynet_ckvids,
@@ -437,10 +511,18 @@ target_perms.partial.r2_bothnets_ckvids <- tar_rep(
                       covar_cols = "diff_arousal",
                       times = n_reps_per_batch * 10)
     
+    looming <- confusions_ckvids %>% 
+      halve_confusions() %>%
+      perm_partial_r2(y_col = "diff_looming",
+                      x1_col = "dist_flynet",
+                      x2_col = "dist_emonet",
+                      times = n_reps_per_batch * 10)
+    
     bind_rows(valence = valence,
               arousal = arousal,
               fear = fear,
               fear_no_arousal = fear_no_arousal,
+              looming = looming,
               .id = "outcome") %>% 
       rename(partial.r2_flynet = partial.r2_x1,
              partial.r2_emonet = partial.r2_x2) %>% 
@@ -631,7 +713,7 @@ target_mds.coords_ckvids <- tar_target(
   name = mds.coords_ckvids,
   command = {
     rating_means <- read_csv(ratings_ck2017) %>% 
-      select(video = Filename, arousal = arousal...37, valence) %>% 
+      select(video = Filename, arousal = arousal...39, valence) %>% 
       # Keep only the TRAINING videos
       # so this has the effect of "fitting" a "model" on the training videos
       inner_join(read_csv(ids.train_kragel2019), 
@@ -661,6 +743,32 @@ target_mds.coords_ckvids <- tar_target(
     bind_rows(.id = "model_type") %>% 
     left_join(rating_means, by = "emotion")
   }
+)
+
+## tables for supplement sigh ----
+
+targets_tables <- list(
+  tar_target(
+    name = summary_partial.r2_bothnets_ckvids,
+    command = {
+      out_path <- "/home/data/eccolab/SPLaT/supptable_subjective_distance.model_perf.csv"
+      
+      perm.pvals_partial.r2_bothnets_ckvids %>% 
+        ungroup() %>% 
+        filter(!(outcome %in% c("fear_no_arousal", "looming"))) %>% 
+        mutate(outcome = str_to_title(outcome),
+               outcome = fct_relevel(outcome, "Arousal", "Valence"),
+               model_type = fct_recode(model_type, "Looming motion" = "flynet", "Static visual quality" = "emonet"),
+               partial.r.abs = sqrt(partial.r2),
+               across(c(partial.r.abs, pval), \(x) signif(x, digits = 3))) %>% 
+        arrange(desc(model_type), outcome) %>% 
+        select(`Model type` = model_type, `Outcome` = outcome, `Partial r` = partial.r.abs, `p-value` = pval) %>% 
+        write_csv(file = out_path)
+      
+      out_path
+    },
+    format = "file"
+  )
 )
 
 ## plotzzz ----
@@ -980,9 +1088,6 @@ list(target_ratings_ck2017,
      target_py_calc_flynet_activations,
      target_preds.framewise_emonet_ckvids,
      target_preds.videowise_emonet_ckvids,
-     target_activations_emonet.fc7_ckvids,
-     target_rsplit_emonet.fc7_ckvids,
-     target_preds_emonet.fc7_ckvids,
      target_weights_flynet,
      target_activations_flynet_ckvids,
      target_rsplit_flynet_ckvids,
@@ -996,6 +1101,7 @@ list(target_ratings_ck2017,
      targets_perm_results,
      target_confusions_ckvids,
      target_mds.coords_ckvids,
+     targets_tables,
      targets_plot_helpers,
      targets_plots,
      targets_figs

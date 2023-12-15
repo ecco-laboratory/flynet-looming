@@ -46,11 +46,18 @@ get_flynet_activation_ck2017 <- function (file, metadata) {
 # such that a recipe trained within fit.workflow will coerce the video ID column to factor
 # and then using bake() to drop the predictor columns before binding to new predicted data
 # fails to find the new factor levels of the testing videos bc duh
-get_discrim_recipe <- function (in_data) {
+get_discrim_recipe <- function (in_data, outcome_var = emotion) {
   # remember, data only needs something with the right colnames and types
-  out <- recipe(emotion ~ ., data = head(in_data)) %>% 
+  out <- recipe(head(in_data)) %>% 
+    update_role(starts_with("intercept"), starts_with("slope"), new_role = "predictor") %>% 
+    update_role({{outcome_var}}, new_role = "outcome") %>% 
     update_role(video, censored, new_role = "ID") %>% 
     step_rm(split)
+  
+  if (is.numeric(pull(in_data, {{outcome_var}}))) {
+    out %<>%
+      step_bin2factor({{outcome_var}}, skip = TRUE)
+  }
   
   return (out)
 }
@@ -70,7 +77,10 @@ get_discrim_workflow <- function (in_recipe, discrim_engine = discrim_linear()) 
 # what do we want? predictions!
 # when do we want them? now!
 # But don't use this for model performance bc we have tidymodels xval for that (below)
-get_discrim_preds_from_trained_model <- function (in_workflow_fit, in_recipe, test_data) {
+get_discrim_preds_from_trained_model <- function (in_workflow_fit, in_recipe, test_data, outcome_var = "emotion") {
+  
+  col_y_obs <- paste0(outcome_var, "_obs")
+  col_y_pred <- paste0(outcome_var, "_pred")
   
   pred_classes <- in_workflow_fit %>% 
     # "predict" on the HELD OUT data
@@ -89,8 +99,18 @@ get_discrim_preds_from_trained_model <- function (in_workflow_fit, in_recipe, te
     # apparently this is how they do it in the tidymodels docs too, so there isn't a better way
     # so... dumb
     bind_cols(pred_classes, pred_probs) %>% 
-    rename(emotion_obs = emotion, emotion_pred = .pred_class) %>% 
-    mutate(emotion_obs = factor(emotion_obs))
+    rename({{col_y_obs}} := {{outcome_var}}, {{col_y_pred}} := .pred_class)
+  
+  if (outcome_var == "emotion") {
+    out %<>%
+      mutate(emotion_obs = factor(emotion_obs))
+  } else if (outcome_var == "looming") {
+    out %<>% 
+      mutate(looming_obs = fct_recode(as.character(looming_obs),
+                                      "yes" = "1",
+                                      "no" = "0"),
+             looming_obs = fct_relevel(looming_obs, "yes"))
+  }
   
   return (out)
 }
@@ -202,7 +222,7 @@ calc_distances_ratings <- function (path_ratings, path_ids_filter = NULL) {
   # The target is a path to file so focus on making that the function arg
   # versus having them each take a df as input
   out <- read_csv(path_ratings) %>% 
-    select(video = Filename, arousal = arousal...37, valence, fear = Fear)
+    select(video = Filename, arousal = arousal...39, valence, fear = Fear, looming = Looming)
   
   if (!is.null(path_ids_filter)) {
     out %<>%
@@ -215,15 +235,16 @@ calc_distances_ratings <- function (path_ratings, path_ids_filter = NULL) {
   out %<>% 
     # first calc the mean rating for each emotion category
     group_by(emotion) %>% 
-    summarize(across(c(arousal, valence, fear), mean)) %>% 
+    summarize(across(-video, mean)) %>% 
     # then copy the cols so we can get category pairwise distances
     mutate(across(everything(), \(x) x, .names = "{.col}_pred")) %>% 
     rename_with(\(x) paste0(x, "_obs"), -ends_with("pred")) %>% 
-    complete(nesting(emotion_obs, valence_obs, arousal_obs, fear_obs), 
-             nesting(emotion_pred, valence_pred, arousal_pred, fear_pred)) %>% 
+    complete(nesting(emotion_obs, valence_obs, arousal_obs, fear_obs, looming_obs), 
+             nesting(emotion_pred, valence_pred, arousal_pred, fear_pred, looming_pred)) %>% 
     mutate(diff_arousal = abs(arousal_obs - arousal_pred),
            diff_valence = abs(valence_obs - valence_pred),
-           diff_fear = abs(fear_obs - fear_pred)) %>% 
+           diff_fear = abs(fear_obs - fear_pred),
+           diff_looming = abs(looming_obs - looming_pred)) %>% 
     # keep only the diff cols
     select(starts_with("emotion"), starts_with("diff"))
   
