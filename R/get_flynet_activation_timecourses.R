@@ -46,10 +46,7 @@ get_flynet_activation <- function (file, fps, tr_length, tr_start_offset) {
                 names_from = rf,
                 values_from = intercept,
                 # use a more agnostic name because this is going to be the general prefix for any predictor
-                names_prefix = "unit_") %>% 
-    # tidymodels step_convolve was proposed and then... cancelled by requester?
-    # so we have to do this before pushing through recipes
-    mutate(across(starts_with("unit"), \(x) c(scale(convolve_hrf(x)))))
+                names_prefix = "unit_")
     
   return (out)
 }
