@@ -17,9 +17,12 @@ library(rlang)
 # Set target options:
 tar_option_set(
   packages = c("tidymodels",
+               "poissonreg",
                "tidyverse",
                "magrittr",
-               "rlang"), # packages that your targets need to run
+               "rlang",
+               "factoextra",
+               "cowplot"), # packages that your targets need to run
   format = "rds" # default storage format
   # Set other options as needed.
 )
@@ -42,8 +45,8 @@ plan(batchtools_slurm,
                       memory = 250L,
                       partition = "short"))
 # These parameters are relevant later inside the permutation testing targets
-n_batches <- 50
-n_reps_per_batch <- 200
+n_batches <- 10
+n_reps_per_batch <- 1000
 
 # Run the R scripts in the R/ folder with your custom functions:
 tar_source(c("R/model_partial_r.R",
@@ -92,7 +95,7 @@ targets_cleaned_data <- list(
     command = hit.probs_ayzenberg2015_raw %>% 
         read_csv() %>% 
         rename(frame_num = frame) %>% 
-        separate(video, into = c("stimulus", NA, NA, "ttc"), sep = "_") %>% 
+        separate(video, into = c("stimulus", NA, NA, NA, NA, "ttc"), sep = "_") %>% 
         mutate(frame_num = as.integer(frame_num + 1),
                ttc = as.integer(str_sub(ttc, start = 5L, end = 5L)))
   ),
@@ -108,6 +111,10 @@ targets_cleaned_data <- list(
         left_join(hit.probs_ayzenberg2015 %>% 
                     group_by(frame_num, ttc) %>% 
                     summarize(hit_prob = mean(hit_prob), .groups = "drop"),
+                  by = c("frame_num", "ttc")) %>% 
+        # join on tau and eta estimates
+        left_join(tau.eta_ayzenberg2015 %>% 
+                    select(frame_num, ttc, tau_inv, eta),
                   by = c("frame_num", "ttc")) %>% 
         group_by(ttc) %>% 
         # so they all end at frame 200
@@ -206,6 +213,28 @@ targets_activations <- list(
       "/home/mthieu/Repos/lourenco_ilooming/flynet_132x132_stride8_hit_probs.csv"
     },
     format = "file"
+  ),
+  tar_target(
+    name = tau.eta_ayzenberg2015,
+    command = {
+      # Since we seem to have to do these just from my simulated videos:
+      # start 15 obj-widths away, arrive 1 obj-width away
+      # starting obj width was simulated at 15 deg visual angle
+      object_width_deg <- 15
+      object_width_dist <- 15 * 2 * tan(object_width_deg/2 * pi/180)
+      
+      hit.probs_ayzenberg2015 %>% 
+        distinct(ttc, frame_num) %>% 
+        group_by(ttc) %>% 
+        mutate(distance = 15 - (14/(max(frame_num)-1))*(frame_num-1),
+               theta = 2*atan2(object_width_dist/2, distance)) %>% 
+        group_by(ttc) %>% 
+        mutate(d_theta = c(NA, diff(theta))) %>% 
+        ungroup() %>% 
+        mutate(tau = theta / d_theta,
+               tau_inv = d_theta / theta,
+               eta = 1 * d_theta * exp(-1*theta))
+    }
   )
 )
 
@@ -216,28 +245,46 @@ targets_activations <- list(
 
 targets_models <- list(
   tar_target(
-    name = coefs_blink.by.hit,
-    command = blink.counts_by_hit.prob %>% 
-      premodel_eyeblink() %>% 
-      glm(n_blinks ~ hit_prob + ttc, family = "poisson", data = .) %>% 
-      tidy()
+    name = model_blink.by.hit_flynet,
+    command = workflow_eyeblink(blink.counts_by_hit.prob,
+                                pca_vars = "hit_prob",
+                                return_fit = TRUE)
+  ),
+  tar_target(
+    name = model_blink.by.hit_tau.inv,
+    command = workflow_eyeblink(blink.counts_by_hit.prob,
+                                pca_vars = c("hit_prob", "tau_inv"),
+                                return_fit = TRUE)
+  ),
+  tar_target(
+    name = model_blink.by.hit_eta,
+    command = workflow_eyeblink(blink.counts_by_hit.prob,
+                                pca_vars = c("hit_prob", "eta"),
+                                return_fit = TRUE)
+  ),
+  tar_target(
+    name = model_blink.by.hit_combined,
+    command = workflow_eyeblink(blink.counts_by_hit.prob,
+                                pca_vars = c("hit_prob", "tau_inv", "eta"),
+                                return_fit = TRUE)
   ),
   tar_target(
     name = pre.auc_blink.by.hit,
     command = blink.counts_by_hit.prob %>% 
       filter(frame_num_shifted >= 125) %>% 
-      mutate(blink_cat = if_else(n_blinks >= 5, "high", "low"),
-             blink_cat = fct_relevel(blink_cat, "high"))
+      mutate(n_blinks = if_else(n_blinks >= 5, "high", "low"),
+             n_blinks = factor(n_blinks)) %>% 
+      select(ttc, hit_prob, n_blinks)
   ),
   tar_target(
     name = auc_blink.by.hit,
     command = {
       auc_overall <- pre.auc_blink.by.hit %>% 
-        yardstick::roc_auc(truth = blink_cat, hit_prob)
+        roc_auc(truth = n_blinks, hit_prob)
       
       auc_by_ttc <- pre.auc_blink.by.hit %>% 
         group_by(ttc) %>% 
-        yardstick::roc_auc(truth = blink_cat, hit_prob)
+        roc_auc(truth = n_blinks, hit_prob)
       
       bind_rows(auc_by_ttc, auc_overall)
     }
@@ -247,27 +294,56 @@ targets_models <- list(
 ## permuting ----
 
 targets_perms <- list(
-  tar_target(
-    name = perms_hit.prob,
-    command = blink.counts_by_hit.prob %>% 
-      premodel_eyeblink() %>% 
-      perm_eyeblink_hit.prob(times = n_batches * n_reps_per_batch) %>% 
-      filter(term == "hit_prob")
+  tar_rep(
+    name = perms_blink.by.hit_flynet,
+    command = perm_eyeblink(blink.counts_by_hit.prob,
+                             pca_vars = "hit_prob",
+                             times = n_reps_per_batch),
+    batches = n_batches,
+    reps = 1,
+    storage = "worker",
+    retrieval = "worker"
   ),
-  tar_target(
-    name = perms_ttc,
-    command = blink.counts_by_hit.prob %>% 
-      premodel_eyeblink() %>% 
-      perm_eyeblink_ttc(times = n_batches * n_reps_per_batch) %>% 
-      filter(term == "ttc")
+  tar_rep(
+    name = perms_blink.by.hit_tau.inv,
+    command = perm_eyeblink(blink.counts_by_hit.prob,
+                            pca_vars = c("hit_prob", "tau_inv"),
+                            times = n_reps_per_batch),
+    batches = n_batches,
+    reps = 1,
+    storage = "worker",
+    retrieval = "worker"
   ),
+  tar_rep(
+    name = perms_blink.by.hit_eta,
+    command = perm_eyeblink(blink.counts_by_hit.prob,
+                            pca_vars = c("hit_prob", "eta"),
+                            times = n_reps_per_batch),
+    batches = n_batches,
+    reps = 1,
+    storage = "worker",
+    retrieval = "worker"
+  ),
+  tar_rep(
+    name = perms_blink.by.hit_combined,
+    command = perm_eyeblink(blink.counts_by_hit.prob,
+                            pca_vars = c("hit_prob", "tau_inv", "eta"),
+                            times = n_reps_per_batch),
+    batches = n_batches,
+    reps = 1,
+    storage = "worker",
+    retrieval = "worker"
+  ),
+  # for auc, because I just don't feel like permuting the logistic regression fit
+  # we will stick to the old faithful aka permuting the true values
+  # to compare with the same preds
   tar_target(
     name = perms_auc_overall,
     command = pre.auc_blink.by.hit %>% 
-      permutations(blink_cat, times = n_batches * n_reps_per_batch) %>% 
+      permutations(n_blinks, times = n_batches * n_reps_per_batch) %>% 
       mutate(.metrics = map(splits, \(x) x %>% 
                               analysis() %>% 
-                              roc_auc(truth = blink_cat, hit_prob),
+                              roc_auc(truth = n_blinks, hit_prob),
                             .progress = "permuting overall blink by hit AUC")) %>%
       select(-splits) %>% 
       unnest(.metrics)
@@ -278,7 +354,7 @@ targets_perms <- list(
       bootstraps(times = n_batches * n_reps_per_batch) %>% 
       mutate(.metrics = map(splits, \(x) x %>% 
                               analysis() %>% 
-                              roc_auc(truth = blink_cat, hit_prob),
+                              roc_auc(truth = n_blinks, hit_prob),
                             .progress = "bootstrapping overall blink by hit AUC")) %>%
       select(-splits) %>% 
       unnest(.metrics)
@@ -287,12 +363,12 @@ targets_perms <- list(
     name = perms_auc_ttc,
     command = pre.auc_blink.by.hit %>% 
       nest(data = -ttc) %>% 
-      mutate(perms = map(data, \(x) permutations(x, blink_cat, times = n_batches * n_reps_per_batch))) %>% 
+      mutate(perms = map(data, \(x) permutations(x, n_blinks, times = n_batches * n_reps_per_batch))) %>% 
       select(-data) %>% 
       unnest(perms) %>% 
       mutate(.metrics = map(splits, \(x) x %>% 
                               analysis() %>% 
-                              roc_auc(truth = blink_cat, hit_prob),
+                              roc_auc(truth = n_blinks, hit_prob),
                             .progress = "permuting blink by hit AUC by TTC")) %>%
       select(-splits) %>% 
       unnest(.metrics)
@@ -344,8 +420,8 @@ targets_plots <- list(
       mutate(time = (frame_num_shifted - max(frame_num_shifted)) * .033) %>% 
       ggplot(aes(x = time, y = n_blinks, color = factor(ttc))) + 
       geom_line(aes(group = ttc)) + 
-      scale_color_viridis_d(option = "magma") + 
-      guides(color = guide_legend(override.aes = list(size = 5))) + 
+      scale_color_viridis_d(option = "magma", end = 0.9) + 
+      guides(color = guide_legend(override.aes = list(linewidth = 5))) + 
       labs(x = "Pre-collision time (s)",
            y = "# blinks (summed across Ps)",
            color = "Time-to-contact (s)") +
@@ -362,8 +438,8 @@ targets_plots <- list(
       mutate(time = (frame_num_shifted - max(frame_num_shifted)) * .033) %>% 
       ggplot(aes(x = time, y = hit_prob, color = factor(ttc))) + 
       geom_line(aes(group = ttc)) + 
-      scale_color_viridis_d(option = "magma") + 
-      guides(color = guide_legend(override.aes = list(size = 5))) + 
+      scale_color_viridis_d(option = "magma", end = 0.9) + 
+      guides(color = guide_legend(override.aes = list(linewidth = 5))) + 
       labs(x = "Pre-collision time (s)",
            y = "Estimated P(hit)",
            color = "Time-to-contact (s)") +
@@ -391,12 +467,22 @@ targets_plots <- list(
     name = plot_auc_blink.by.hit,
     command = pre.auc_blink.by.hit %>% 
       group_by(ttc) %>% 
-      yardstick::roc_curve(truth = blink_cat, hit_prob) %>% 
+      yardstick::roc_curve(truth = n_blinks, hit_prob) %>% 
       autoplot() +
       scale_color_viridis_d(option = "magma", end = 0.9) +
       labs(x = "1 - Specificity",
            y = "Sensitivity", color = "TTC (s)") +
-      guides(color = guide_legend(override.aes = list(size = 3)))
+      guides(color = guide_legend(override.aes = list(linewidth = 3)))
+  ),
+  tar_target(
+    name = plot_pca_loadings,
+    command = blink.counts_by_hit.prob %>% 
+      filter(frame_num_shifted >= 125) %>% 
+      select(`Collision probability` = hit_prob, `Inverse tau` = tau_inv, `Eta` = eta) %>% 
+      prcomp(center = TRUE, scale. = TRUE) %>% 
+      fviz_pca_var() +
+      expand_limits(x = 1.3) +
+      labs(title = NULL)
   )
 )
 
@@ -455,6 +541,16 @@ targets_figs <- list(
     format = "file"
   ),
   tar_target(
+    name = fig_blink.hit.by.time,
+    command = plot_grid(plot_blink.by.time, 
+                        plot_hit.by.time +
+                          guides(color = "none"), 
+                        labels = "AUTO") %>% 
+      save_plot(filename = here::here("ignore", "figs", "eyeblink_blink.hit.by.time.png"),
+                plot = .,
+                base_asp = 2.5)
+  ),
+  tar_target(
     name = fig_blink.by.hit,
     command = (plot_blink.by.hit +
                  theme_bw(base_size = 12) +
@@ -483,6 +579,20 @@ targets_figs <- list(
              path = here::here("ignore", "figs"),
              width = 1000,
              height = 1000,
+             units = "px"),
+    format = "file"
+  ),
+  tar_target(
+    name = fig_pca_loadings,
+    command = (plot_pca_loadings +
+                 theme(text = element_text(size = 12),
+                       plot.background = element_blank(),
+                       aspect.ratio = 2/2.3)) %>% 
+      ggsave(filename = "eyeblink_pca.png",
+             plot = .,
+             path = here::here("ignore", "figs"),
+             width = 1400,
+             height = 1200,
              units = "px"),
     format = "file"
   )
