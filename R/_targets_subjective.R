@@ -22,7 +22,8 @@ tar_option_set(
                "discrim",
                "tidyverse",
                "magrittr",
-               "rlang"), # packages that your targets need to run
+               "rlang",
+               "cowplot"), # packages that your targets need to run
   format = "rds" # default storage format
   # Set other options as needed.
 )
@@ -909,7 +910,10 @@ targets_plots <- list(
 targets_figs <- list(
   tar_target(
     name = fig_subjective_0564_category.probs,
-    command = (preds_flynet_ckvids %>% 
+    command = {
+      out_filename <- "subjective_0564_category.probs.svg"
+        
+      (preds_flynet_ckvids %>% 
                  filter(video == "0564.mp4") %>% 
                  select(video, starts_with(".pred")) %>% 
                  pivot_longer(cols = starts_with(".pred"), 
@@ -923,32 +927,44 @@ targets_figs <- list(
                  labs(x = "Model-estimated category probability", y = NULL) +
                  theme_bw(base_size = 12) +
                  theme(plot.background = element_blank())) %>% 
-      ggsave(filename = "subjective_0564_category.probs.svg",
+      ggsave(filename = out_filename,
              plot = .,
              path = here::here("ignore", "figs"),
              width = 1500,
              height = 600,
              units = "px")
+      
+      here::here("ignore", "figs", out_filename)
+      },
+    format = "file"
   ),
   tar_target(
     name = fig_model.acc_ckvids,
-    command = (plot_model.acc_ckvids +
+    command = {
+      out_filename <- "subjective_model.acc_overall.svg"
+      (plot_model.acc_ckvids +
                  scale_x_discrete(labels = c("Static object features", "Looming motion")) + 
                  scale_fill_viridis_d(begin = 0.3, end = 0.7, option = "magma") + 
                  guides(fill = "none") +
                  labs(x = NULL, y = "20-way emotion classification accuracy") + 
                  theme_bw(base_size = 12) +
                  theme(plot.background = element_blank())) %>% 
-      ggsave(filename = "subjective_model.acc_overall.svg",
+      ggsave(filename = out_filename,
              plot = .,
              path = here::here("ignore", "figs"),
              width = 800,
              height = 1200,
              units = "px")
+      
+      here::here("ignore", "figs", out_filename)
+      },
+    format = "file"
   ),
   tar_target(
     name = fig_model.acc.by.category_ckvids,
-    (plot_model.acc.by.category_ckvids +
+    command = {
+      out_filename <- "subjective_model.acc_category.svg"
+      (plot_model.acc.by.category_ckvids +
        scale_fill_viridis_d(begin = 0.3, end = 0.7, option = "magma") + 
        annotate(geom = "text", x = -1, y = 11, label = "Static object features", angle = 90, size = 3) +
        annotate(geom = "text", x = 1, y = 11, label = "Looming motion", angle = 270, size = 3) +
@@ -956,12 +972,49 @@ targets_figs <- list(
        labs(y = NULL) +
        theme_bw(base_size = 12) +
        theme(plot.background = element_blank())) %>% 
-      ggsave(filename = "subjective_model.acc_category.svg",
+      ggsave(filename = out_filename,
            plot = .,
            path = here::here("ignore", "figs"),
            width = 1600,
            height = 1000,
            units = "px")
+      
+      here::here("ignore", "figs", out_filename)
+      },
+    format = "file"
+  ),
+  tar_target(
+    name = fig_model.acc.both_ckvids,
+    command = {
+      out_path <- here::here("ignore", "figs", "subjective_model.acc_both.png")
+      plot_grid(
+        plot_model.acc_ckvids +
+          scale_x_discrete(labels = c("Static object features", "Looming motion")) + 
+          scale_fill_viridis_d(begin = 0.3, end = 0.7, option = "magma") + 
+          guides(fill = "none") +
+          labs(x = NULL, y = "20-way emotion classification accuracy") + 
+          theme_bw(base_size = 12) +
+          theme(plot.background = element_blank()),
+        plot_model.acc.by.category_ckvids +
+          scale_fill_viridis_d(begin = 0.3, end = 0.7, option = "magma") + 
+          annotate(geom = "text", x = -1, y = 11, label = "Static object features", angle = 90, size = 4) +
+          annotate(geom = "text", x = 1, y = 11, label = "Looming motion", angle = 270, size = 4) +
+          guides(fill = "none") +
+          labs(y = NULL) +
+          theme_bw(base_size = 12) +
+          theme(plot.background = element_blank()),
+        align = "h",
+        axis = "tb",
+        labels = "AUTO",
+        rel_widths = c(1, 2.5)
+      ) %>% 
+        save_plot(filename = out_path,
+                  plot = .,
+                  base_height = 5,
+                  base_asp = 1.618)
+      
+      out_path
+    }
   ),
   tar_target(
     name = fig_structure.coefs_flynet_ckvids,
