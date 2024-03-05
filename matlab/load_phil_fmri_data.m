@@ -1,5 +1,5 @@
 %% load libraries
-addpath(genpath('/home/data/eccolab/Code/GitHub/spm12'));
+addpath('/home/data/eccolab/Code/GitHub/spm12/spm12'); % per spm docs, do not genpath it
 addpath(genpath('/home/data/eccolab/Code/GitHub/CanlabCore/CanlabCore'));
 addpath(genpath('/home/data/eccolab/Code/GitHub/Neuroimaging_Pattern_Masks'));
 
