@@ -42,7 +42,7 @@ plan(batchtools_slurm,
                       # walltime 1800 for 30min (partition short)
                       walltime = 1800L,
                       # Please be mindful this is not THAT much. No honker dfs pls
-                      memory = 250L,
+                      memory = 1000L,
                       partition = "short"))
 # These parameters are relevant later inside the permutation testing targets
 n_batches <- 10
@@ -251,6 +251,18 @@ targets_models <- list(
                                 return_fit = TRUE)
   ),
   tar_target(
+    name = model_blink.by.hit_only.tau.inv,
+    command = workflow_eyeblink(blink.counts_by_hit.prob,
+                                pca_vars = "tau_inv",
+                                return_fit = TRUE)
+  ),
+  tar_target(
+    name = model_blink.by.hit_only.eta,
+    command = workflow_eyeblink(blink.counts_by_hit.prob,
+                                pca_vars = "eta",
+                                return_fit = TRUE)
+  ),
+  tar_target(
     name = model_blink.by.hit_tau.inv,
     command = workflow_eyeblink(blink.counts_by_hit.prob,
                                 pca_vars = c("hit_prob", "tau_inv"),
@@ -299,6 +311,26 @@ targets_perms <- list(
     command = perm_eyeblink(blink.counts_by_hit.prob,
                              pca_vars = "hit_prob",
                              times = n_reps_per_batch),
+    batches = n_batches,
+    reps = 1,
+    storage = "worker",
+    retrieval = "worker"
+  ),
+  tar_rep(
+    name = perms_blink.by.hit_only.tau.inv,
+    command = perm_eyeblink(blink.counts_by_hit.prob,
+                            pca_vars = "tau_inv",
+                            times = n_reps_per_batch),
+    batches = n_batches,
+    reps = 1,
+    storage = "worker",
+    retrieval = "worker"
+  ),
+  tar_rep(
+    name = perms_blink.by.hit_only.eta,
+    command = perm_eyeblink(blink.counts_by_hit.prob,
+                            pca_vars = "eta",
+                            times = n_reps_per_batch),
     batches = n_batches,
     reps = 1,
     storage = "worker",
@@ -404,6 +436,40 @@ targets_perm_results <- list(
                   # less than BECAUSE OBSERVED TAU IS NEGATIVE!!!
                   pval = (sum(tau_perm < tau_real) + 1) / (n() + 1))
       }
+  )
+)
+
+## tabley wablies for supplement ----
+
+targets_tables <- list(
+  tar_target(
+    name = summary_blink.by.hit,
+    command = {
+      out_path <- "/home/data/eccolab/SPLaT/supptable_eyeblink_model_perf.csv"
+      
+      list(flynet = model_blink.by.hit_flynet,
+           tauinv = model_blink.by.hit_only.tau.inv,
+           eta = model_blink.by.hit_only.eta,
+           flynet.tauinv = model_blink.by.hit_tau.inv,
+           flynet.eta = model_blink.by.hit_eta,
+           combined = model_blink.by.hit_combined) %>% 
+        map(glance) %>% 
+        bind_rows(.id = "model_type") %>% 
+        mutate(model_type = fct_recode(model_type,
+                                       "Inverse tau" = "tauinv",
+                                       "Eta" = "eta",
+                                       "Collision detection model" = "flynet",
+                                       "Collision detection + inverse tau" = "flynet.tauinv",
+                                       "Collision detection + eta" = "flynet.eta",
+                                       "Collision detection + inverse tau and eta" = "combined"),
+               AIC = round(AIC, digits = 0)) %>% 
+        select(`Model predictors` = model_type, AIC) %>% 
+        arrange(AIC) %>% 
+        write_csv(file = out_path)
+      
+      out_path
+    },
+    format = "file"
   )
 )
 
@@ -609,6 +675,7 @@ c(
   targets_models,
   targets_perms,
   targets_perm_results,
+  targets_tables,
   targets_plots,
   targets_figs
 )
