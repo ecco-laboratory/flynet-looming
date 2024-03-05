@@ -20,6 +20,9 @@ tar_option_set(
                "plsmod",
                "tidyverse",
                "magrittr",
+               "glue",
+               "withr",
+               "matlabr",
                "rlang",
                "RNifti",
                "cowplot",
@@ -44,23 +47,42 @@ plan(batchtools_slurm,
                       exclude = "gpu2,node3",
                       # walltime 86400 for 24h (partition day-long)
                       # walltime 1800 for 30min (partition short)
-                      walltime = 86400L,
-                      # 8 GB (8000L) is normally more than enough but...
-                      # The permutation tests for V1 are getting huge, they seem to need ~24 GB
-                      memory = 24000L,
+                      walltime = 86400,
+                      # The permutation tests for V1 are getting huge, they seem to need ~4 GB
+                      # The Matlab-based permutation tests for model-based connectivity are also hefty
+                      # they perform best with... 32 GB?! Just 2 b safe
+                      memory = 32000L,
                       partition = "day-long"))
 # These parameters are relevant later inside the permutation testing targets
-n_batches <- 100
-n_reps_per_batch <- 50
+n_batches <- 500
+n_reps_per_batch <- 10
 
 # Run the R scripts in the R/ folder with your custom functions:
 tar_source(c("R/get_flynet_activation_timecourses.R",
              "R/get_retinotopy_fmri.R",
              "R/model_retinotopy_fmri.R",
-             "R/plot_retinotopy_fmri.R"
-             ))
+             "R/plot_retinotopy_fmri.R",
+             "~/Repos/looming-fmri/R/utils/call-matlab.R"))
 
 # source("other_functions.R") # Source other scripts as needed. # nolint
+
+matlab_path <- "/opt/MATLAB/R2022a/bin"
+# options(matlab.path = matlab_path)
+
+## matlab scripts (yuck) ----
+
+targets_matlab <- list(
+  tar_target(
+    name = matlab_preproc_mask_fmri_data_canlabtools,
+    command = here::here("matlab", "preproc_mask_fmri_data_canlabtools.m"),
+    format = "file"
+  ),
+  tar_target(
+    name = matlab_calc_encoding_model_connectivity,
+    command = here::here("matlab", "flynet_connectivity_studyforrest.m"),
+    format = "file"
+  )
+)
 
 ## python scripts ----
 
@@ -102,6 +124,23 @@ targets_flynet_activations <- list(
       arrange(run_type, tr_num) %>% 
       mutate(across(starts_with("unit"), \(x) c(scale(convolve_hrf(x))))) %>% 
       ungroup()
+  ),
+  tar_target(
+    name = flynet_activations_convolved_studyforrest_prematlab,
+    command = {
+      out_path <- "/home/data/eccolab/studyforrest-data-phase2/flynet_convolved_timecourses.csv"
+      
+      flynet_activations_convolved_studyforrest %>% 
+        select(stim_type = run_type, tr_num, everything()) %>% 
+        # into the order that they will be in the fMRI data from matlab
+        # alphabetical by studyforrest file condition name
+        mutate(stim_type = fct_relevel(stim_type, "wedge_counter", "wedge_clock", "ring_contract")) %>% 
+        arrange(stim_type, tr_num) %>% 
+        write_csv(file = out_path)
+      
+      out_path
+      },
+    format = "file"
   ),
   tar_target(
     name = flynet_activations_raw_nsd,
@@ -181,12 +220,50 @@ targets_formula_activations <- list(
 targets_fmri_data <- list(
   tar_target(
     name = fmri_mat_sc_studyforrest,
-    command = "/home/data/eccolab/studyforrest-data-phase2/DATA_bpf.mat",
+    command = {
+      out_path <- "/home/data/eccolab/studyforrest-data-phase2/fmri_data_canlabtooled_sc.mat"
+      
+      matlab_commands <- c(
+        assign_variable("project_dir", "/home/data/eccolab/studyforrest-data-phase2"),
+        assign_variable("data_subdir", "ses-localizer/func"),
+        assign_variable("sub_prefix", "sub-"),
+        assign_variable("roi", "Bstem_SC"),
+        assign_variable("out_name", out_path),
+        call_script(matlab_preproc_mask_fmri_data_canlabtools)
+      )
+      
+      with_path(
+        matlab_path,
+        run_matlab_code(matlab_commands)
+      )
+      
+      out_path
+      },
     format = "file"
   ),
   tar_target(
     name = fmri_mat_v1_studyforrest,
-    command = "/home/data/eccolab/studyforrest-data-phase2/V1_DATA_bpf.mat",
+    command = {
+      # the script now omits data from the bonky subject
+      # as opposed to having one array dim filled with all 0s
+      out_path <- "/home/data/eccolab/studyforrest-data-phase2/fmri_data_canlabtooled_v1.mat"
+      
+      matlab_commands <- c(
+        assign_variable("project_dir", "/home/data/eccolab/studyforrest-data-phase2"),
+        assign_variable("data_subdir", "ses-localizer/func"),
+        assign_variable("sub_prefix", "sub-"),
+        assign_variable("roi", "Ctx_V1"),
+        assign_variable("out_name", out_path),
+        call_script(matlab_preproc_mask_fmri_data_canlabtools)
+      )
+      
+      with_path(
+        matlab_path,
+        run_matlab_code(matlab_commands)
+      )
+      
+      out_path
+    },
     format = "file"
   ),
   tar_target(
@@ -223,17 +300,17 @@ targets_fmri_data <- list(
       get_phil_matlab_fmri_data_studyforrest() %>% 
       proc_phil_matlab_fmri_data(tr_start = 3,
                                  tr_end = 82) %>% 
-      mutate(stim_type = run_type) %>% 
-      # Just this subject has all 0 data for some reason...
-      filter(subj_num != 6) 
+      mutate(stim_type = run_type)
+      # Just sub-06 has all 0 data for some reason...
+      # but fmri_mat_v1_studyforrest now omits 0-data subjects
+      # so we should no longer need to filter them out post facto
   ),
   tar_target(
     name = groupavgs_fmri_v1_studyforrest,
     command = {
       fmri_data <- fmri_data_v1_studyforrest
       folds <- fmri_data %>% 
-        prep_xval() %>% 
-        filter(fold_num != 6)
+        prep_xval()
       
       folds %>% 
         mutate(groupavg = map(test_subjs,
@@ -448,10 +525,7 @@ targets_pls_v1_studyforrest <- list(
   tar_target(
     name = pls_flynet_v1_studyforrest,
     command = fit_xval(in_x = flynet_activations_convolved_studyforrest,
-                       in_y = fmri_data_v1_studyforrest %>% 
-                         # re-number it to skip the missing subject 6
-                         # so that the n folds thing works
-                         mutate(subj_num = if_else(subj_num > 6, subj_num - 1L, subj_num)),
+                       in_y = fmri_data_v1_studyforrest,
                        include_fit = FALSE)
   ),
   tar_target(
@@ -459,8 +533,7 @@ targets_pls_v1_studyforrest <- list(
     command = flynet_activations_convolved_studyforrest %>% 
       left_join(formula_activations_convolved_studyforrest,
                 by = c("run_type", "tr_num")) %>% 
-      fit_xval(in_y = fmri_data_v1_studyforrest %>% 
-                 mutate(subj_num = if_else(subj_num > 6, subj_num - 1L, subj_num)),
+      fit_xval(in_y = fmri_data_v1_studyforrest,
                predictor_cols = tau_inv,
                include_fit = FALSE)
   ),
@@ -469,8 +542,7 @@ targets_pls_v1_studyforrest <- list(
     command = flynet_activations_convolved_studyforrest %>% 
       left_join(formula_activations_convolved_studyforrest,
                 by = c("run_type", "tr_num")) %>% 
-      fit_xval(in_y = fmri_data_v1_studyforrest %>% 
-                 mutate(subj_num = if_else(subj_num > 6, subj_num - 1L, subj_num)),
+      fit_xval(in_y = fmri_data_v1_studyforrest,
                predictor_cols = eta,
                include_fit = FALSE)
   ),
@@ -479,8 +551,7 @@ targets_pls_v1_studyforrest <- list(
     command = flynet_activations_convolved_studyforrest %>% 
       left_join(formula_activations_convolved_studyforrest,
                 by = c("run_type", "tr_num")) %>% 
-      fit_xval(in_y = fmri_data_v1_studyforrest %>% 
-                 mutate(subj_num = if_else(subj_num > 6, subj_num - 1L, subj_num)),
+      fit_xval(in_y = fmri_data_v1_studyforrest,
                predictor_cols = c(tau_inv, eta),
                include_fit = FALSE)
   ),
@@ -489,8 +560,7 @@ targets_pls_v1_studyforrest <- list(
     command = flynet_activations_convolved_studyforrest %>% 
       left_join(formula_activations_convolved_studyforrest,
                 by = c("run_type", "tr_num")) %>% 
-      fit_xval(in_y = fmri_data_v1_studyforrest %>% 
-                 mutate(subj_num = if_else(subj_num > 6, subj_num - 1L, subj_num)),
+      fit_xval(in_y = fmri_data_v1_studyforrest,
                predictor_cols = c(starts_with("unit"), tau_inv),
                include_fit = FALSE)
   ),
@@ -499,8 +569,7 @@ targets_pls_v1_studyforrest <- list(
     command = flynet_activations_convolved_studyforrest %>% 
       left_join(formula_activations_convolved_studyforrest,
                 by = c("run_type", "tr_num")) %>% 
-      fit_xval(in_y = fmri_data_v1_studyforrest %>% 
-                 mutate(subj_num = if_else(subj_num > 6, subj_num - 1L, subj_num)),
+      fit_xval(in_y = fmri_data_v1_studyforrest,
                predictor_cols = c(starts_with("unit"), eta),
                include_fit = FALSE)
   ),
@@ -509,16 +578,14 @@ targets_pls_v1_studyforrest <- list(
     command = flynet_activations_convolved_studyforrest %>% 
       left_join(formula_activations_convolved_studyforrest,
                 by = c("run_type", "tr_num")) %>% 
-      fit_xval(in_y = fmri_data_v1_studyforrest %>% 
-                 mutate(subj_num = if_else(subj_num > 6, subj_num - 1L, subj_num)),
+      fit_xval(in_y = fmri_data_v1_studyforrest,
                predictor_cols = c(starts_with("unit"), tau_inv, eta),
                include_fit = FALSE)
   ),
   tar_target(
     name = pls_flynet_v1_studyforrest_by.run.type,
     command = fit_xval(in_x = flynet_activations_convolved_studyforrest,
-                       in_y = fmri_data_v1_studyforrest %>% 
-                         mutate(subj_num = if_else(subj_num > 6, subj_num - 1L, subj_num)),
+                       in_y = fmri_data_v1_studyforrest,
                        by_run_type = TRUE,
                        include_fit = FALSE)
   ),
@@ -529,7 +596,6 @@ targets_pls_v1_studyforrest <- list(
                 by = c("run_type", "tr_num")) %>% 
       filter(startsWith(run_type, "ring")) %>% 
       fit_xval(in_y = fmri_data_v1_studyforrest %>% 
-                 mutate(subj_num = if_else(subj_num > 6, subj_num - 1L, subj_num)) %>% 
                  filter(startsWith(run_type, "ring")),
                predictor_cols = c(starts_with("unit"), tau_inv),
                by_run_type = TRUE,
@@ -542,7 +608,6 @@ targets_pls_v1_studyforrest <- list(
                 by = c("run_type", "tr_num")) %>% 
       filter(startsWith(run_type, "ring")) %>% 
       fit_xval(in_y = fmri_data_v1_studyforrest %>% 
-                 mutate(subj_num = if_else(subj_num > 6, subj_num - 1L, subj_num)) %>% 
                  filter(startsWith(run_type, "ring")),
                predictor_cols = c(starts_with("unit"), eta),
                by_run_type = TRUE,
@@ -555,7 +620,6 @@ targets_pls_v1_studyforrest <- list(
                 by = c("run_type", "tr_num")) %>% 
       filter(startsWith(run_type, "ring")) %>% 
       fit_xval(in_y = fmri_data_v1_studyforrest %>% 
-                 mutate(subj_num = if_else(subj_num > 6, subj_num - 1L, subj_num)) %>% 
                  filter(startsWith(run_type, "ring")),
                predictor_cols = c(starts_with("unit"), tau_inv, eta),
                by_run_type = TRUE,
@@ -568,7 +632,6 @@ targets_pls_v1_studyforrest <- list(
                 by = c("run_type", "tr_num")) %>% 
       filter(startsWith(run_type, "ring")) %>% 
       fit_xval(in_y = fmri_data_v1_studyforrest %>% 
-                 mutate(subj_num = if_else(subj_num > 6, subj_num - 1L, subj_num)) %>% 
                  filter(startsWith(run_type, "ring")),
                predictor_cols = tau_inv,
                by_run_type = TRUE,
@@ -581,7 +644,6 @@ targets_pls_v1_studyforrest <- list(
                 by = c("run_type", "tr_num")) %>% 
       filter(startsWith(run_type, "ring")) %>% 
       fit_xval(in_y = fmri_data_v1_studyforrest %>% 
-                 mutate(subj_num = if_else(subj_num > 6, subj_num - 1L, subj_num)) %>% 
                  filter(startsWith(run_type, "ring")),
                predictor_cols = eta,
                by_run_type = TRUE,
@@ -594,7 +656,6 @@ targets_pls_v1_studyforrest <- list(
                 by = c("run_type", "tr_num")) %>% 
       filter(startsWith(run_type, "ring")) %>% 
       fit_xval(in_y = fmri_data_v1_studyforrest %>% 
-                 mutate(subj_num = if_else(subj_num > 6, subj_num - 1L, subj_num)) %>% 
                  filter(startsWith(run_type, "ring")),
                predictor_cols = c(tau_inv, eta),
                by_run_type = TRUE,
@@ -804,7 +865,11 @@ targets_metrics <- list(
       v1 <- left_join(v1_overall,
                       v1_by.run.type,
                       by = c("parameter","stim_type", "subj_num"),
-                      suffix = c("_overall", "_by.run.type"))
+                      suffix = c("_overall", "_by.run.type")) %>% 
+        # JUST IN CASE we might ever compare data between ROIs by subject
+        # I think we never will because the noise ceilings are so different but just in case!
+        # bc in the raw fMRI data coming in, subject 6 with the skunked voxels is just missing now
+        mutate(subj_num = if_else(subj_num >= 6, subj_num + 1, subj_num))
       
       bind_rows(SC = sc,
                 V1 = v1,
@@ -848,6 +913,52 @@ targets_metrics_other <- list(
 
 targets_perms <- list(
   tar_rep(
+    name = permuted_trs_studyforrest,
+    command = {
+      fmri_data <- fmri_data_sc_studyforrest
+      tibble(permuted_trs = map(1,
+                                \(x) get_permuted_order(fmri_data, 
+                                                        n_cycles = 5L)))
+      },
+    batches = n_batches,
+    reps = n_reps_per_batch,
+    iteration = "list",
+    storage = "worker",
+    retrieval = "worker"
+  ),
+  tar_rep2(
+    name = perms_flynet_sc_studyforrest,
+    command = wrap_perms(permuted_trs = permuted_trs_studyforrest$permuted_trs,
+                 preds_together = pls_pred.only_flynet_sc_studyforrest,
+                 metrics_together = metrics_flynet_sc_studyforrest,
+                 preds_by.run.type = pls_pred.only_flynet_sc_studyforrest_by.run.type,
+                 metrics_by.run.type = metrics_flynet_sc_studyforrest_by.run.type),
+    permuted_trs_studyforrest
+  ),
+  tar_rep2(
+    name = perms_combined_sc_studyforrest,
+    command = wrap_perms(permuted_trs = permuted_trs_studyforrest$permuted_trs,
+                 preds_together = pls_pred.only_combined_sc_studyforrest,
+                 metrics_together = metrics_formula_sc_studyforrest %>% 
+                   filter(parameter == "combined"),
+                 preds_by.run.type = pls_pred.only_combined_sc_studyforrest_by.run.type,
+                 metrics_by.run.type =  metrics_formula_sc_studyforrest_by.run.type %>% 
+                   filter(parameter == "combined")),
+    permuted_trs_studyforrest
+  ),
+  tar_rep2(
+    name = perms_flynet_v1_studyforrest,
+    command = wrap_perms(permuted_trs = permuted_trs_studyforrest$permuted_trs,
+                         preds_together = pls_flynet_v1_studyforrest,
+                         metrics_together = metrics_flynet_v1_studyforrest,
+                         preds_by.run.type = pls_flynet_v1_studyforrest_by.run.type,
+                         metrics_by.run.type = metrics_flynet_v1_studyforrest_by.run.type),
+    permuted_trs_studyforrest
+  )
+)
+
+targets_perms_other <- list(
+  tar_rep2(
     name = perms_flynet_sc_studyforrest,
     command = {
       metrics_only.formula_together <- metrics_only.formula_sc_studyforrest
@@ -896,15 +1007,12 @@ targets_perms <- list(
                                                                                metrics = metrics_formula_by.run.type %>% 
                                                                                  filter(parameter == "combined"))))
       
-      combine_perms_studyforrest(fmri_data = fmri_data_sc_studyforrest,
+      combine_perms_studyforrest(permuted_trs = permuted_trs_studyforrest$permuted_trs,
                                  combined_preds_metrics = combined_preds_metrics)
-      },
-    batches = n_batches,
-    reps = n_reps_per_batch,
-    storage = "worker",
-    retrieval = "worker"
+    },
+    permuted_trs_studyforrest
   ),
-  tar_rep(
+  tar_rep2(
     name = perms_flynet_v1_studyforrest,
     command = {
       metrics_only.formula_together <- metrics_only.formula_v1_studyforrest
@@ -953,17 +1061,11 @@ targets_perms <- list(
                                                                                metrics = metrics_formula_by.run.type %>% 
                                                                                  filter(parameter == "combined"))))
       
-      combine_perms_studyforrest(fmri_data = fmri_data_v1_studyforrest,
+      combine_perms_studyforrest(permuted_trs = permuted_trs_studyforrest$permuted_trs,
                                  combined_preds_metrics = combined_preds_metrics)
-      },
-    batches = n_batches,
-    reps = n_reps_per_batch,
-    storage = "worker",
-    retrieval = "worker"
-  )
-)
-
-targets_perms_other <- list(
+    },
+    permuted_trs_studyforrest
+  ),
   tar_rep(
     name = perms_flynet_sc_nsd,
     command = pls_flynet_sc_nsd %>% 
@@ -1017,6 +1119,36 @@ targets_perm_results <- list(
                               perms_formula_v1_studyforrest,
                               extra_grouping_cols = parameter,
                               has_voxel_num = FALSE)
+  )
+)
+
+## other model outputs (in matlab from phil) ----
+
+targets_metrics_matlab <- list(
+  tar_target(
+    name = statmaps_connectivity_studyforrest,
+    command = {
+      
+      out_fstring <- "%smap_flynet_connectivity_contrast.nii"
+      out_paths <- file.path("/home/data/eccolab/studyforrest-data-phase2", 
+                             sprintf(out_fstring, c("stat", "pval"))
+      )
+
+      matlab_commands <- c(
+        assign_variable("sc_data_path", fmri_mat_sc_studyforrest),
+        assign_variable("studyforrest_activation_path", flynet_activations_convolved_studyforrest_prematlab),
+        assign_variable("out_fstring", "%smap_flynet_connectivity_%s.nii"),
+        call_script(matlab_calc_encoding_model_connectivity)
+      )
+      
+      with_path(
+        matlab_path,
+        run_matlab_code(matlab_commands)
+      )
+      
+      out_paths
+    },
+    format = "file"
   )
 )
 
@@ -1137,42 +1269,20 @@ targets_plots <- list(
       }
   ),
   tar_target(
-    name = boxplot_mini_cv.r_studyforrest,
-    command = {
-      plot_data <- metrics_all_studyforrest %>% 
-        filter(parameter == "flynet") %>% 
-        mutate(is_expand = if_else(stim_type == "ring_expand", "Expanding rings", "Other stimuli")) %>% 
-        pivot_longer(cols = starts_with("r_model"), 
-                     names_to = "fit_type", values_to = "r_model", names_prefix = "r_model_") %>% 
-        group_by(roi, is_expand, fit_type, subj_num) %>% 
-        summarize(r_model = mean(r_model), .groups = "drop") %>% 
-        mutate(fit_type = fct_recode(fit_type, "Stimulus-general" = "overall", "Stimulus-specific" = "by.run.type"),
-               highlight = if_else(is_expand == "Expanding rings" & fit_type == "Stimulus-specific model" & roi == "SC",
-                                   "yes",
-                                   "no"))
-      
-      plot_summaries <- plot_data %>%
-        group_by(roi, is_expand, fit_type) %>% 
-        summarize(across(r_model, list(mean = mean, sd = sd, se = \(x) sd(x)/sqrt(length(x)))))
-      
-      plot_data %>% 
-        ggplot(aes(x = fit_type, y = r_model)) + 
-        geom_line(aes(group = subj_num), color = "grey60") + 
-        geom_jitter(width = 0.03, color = "grey60", size = 2, alpha = 0.7) +
-        geom_errorbar(aes(y = NULL,
-                          ymin = r_model_mean - 2*r_model_se,
-                          ymax = r_model_mean + 2*r_model_se),
-                      data = plot_summaries, width = 0) +
-        geom_line(aes(group = 1, y = r_model_mean), 
-                   data = plot_summaries) +
-        geom_point(aes(y = r_model_mean), 
-                   data = plot_summaries, size = 3) +
-        geom_hline(yintercept = 0, linetype = "dotted") + 
-        scale_color_viridis_c(direction = -1) +
-        facet_grid(roi ~ is_expand) +
-        # guides(color = "none") +
-        labs(x = "Model type", y = "Cross-validated r")
-      }
+    name = boxplot_mini_cv.r_sc_studyforrest,
+    command = plot_boxplot_mini_cv_r_studyforrest(metrics_all_studyforrest)
+  ),
+  tar_target(
+    name = plot_intxn_cv.r_sc_studyforrest,
+    command = plot_intxn_cv_r_studyforrest(metrics_all_studyforrest)
+  ),
+  tar_target(
+    name = boxplot_mini_cv.r_v1_studyforrest,
+    command = plot_boxplot_mini_cv_r_studyforrest(metrics_all_studyforrest, this_roi = "V1")
+  ),
+  tar_target(
+    name = plot_intxn_cv.r_v1_studyforrest,
+    command = plot_intxn_cv_r_studyforrest(metrics_all_studyforrest, this_roi = "V1")
   ),
   tar_target(
     name = heatmap_pls.beta_studyforrest_by.run.type,
@@ -1308,14 +1418,42 @@ targets_figs <- list(
     format = "file"
   ),
   tar_target(
-    name = fig_boxplot_mini_cv.r_studyforrest,
-    command = ggsave(here::here("ignore", "figs", "retinotopy_boxplot_mini_cv.r_studyforrest.svg"),
-                     plot = boxplot_mini_cv.r_studyforrest + 
-                       theme_bw(base_size = 10) +
-                       theme(plot.background = element_rect(fill = "transparent")),
-                     width = 1600,
-                     height = 1300,
-                     units = "px"),
+    name = fig_boxplot_mini_cv.r_sc_studyforrest,
+    command = plot_grid(boxplot_mini_cv.r_sc_studyforrest + 
+                          theme_bw(base_size = 12) +
+                          theme(plot.background = element_rect(fill = "transparent"),
+                                axis.text.x = element_text(angle = 20, vjust = 0.7)), 
+                        plot_intxn_cv.r_sc_studyforrest + 
+                          scale_x_discrete(position = "top") + 
+                          theme_bw(base_size = 12) +
+                          theme(plot.background = element_rect(fill = "transparent"),
+                                axis.text.x.top = element_text(angle = 20, vjust = 0.3)), 
+                        rel_widths = c(2, 1), 
+                        align = "h", 
+                        axis = "tb") %>% 
+      save_plot(filename = here::here("ignore", "figs", "retinotopy_boxplot_mini_cv.r_sc_studyforrest.png"),
+                plot = .,
+                base_asp = 1.8),
+    format = "file"
+  ),
+  tar_target(
+    name = fig_boxplot_mini_cv.r_v1_studyforrest,
+    command = plot_grid(boxplot_mini_cv.r_v1_studyforrest + 
+                          theme_bw(base_size = 12) +
+                          theme(plot.background = element_rect(fill = "transparent"),
+                                axis.text.x = element_text(angle = 20, vjust = 0.7)), 
+                        plot_intxn_cv.r_v1_studyforrest + 
+                          scale_x_discrete(position = "top") + 
+                          theme_bw(base_size = 12) +
+                          theme(plot.background = element_rect(fill = "transparent"),
+                                axis.text.x.top = element_text(angle = 20, vjust = 0.3)), 
+                        rel_widths = c(2, 1), 
+                        align = "h", 
+                        labels = "AUTO",
+                        axis = "tb") %>% 
+      save_plot(filename = here::here("ignore", "figs", "retinotopy_boxplot_mini_cv.r_v1_studyforrest.png"),
+                plot = .,
+                base_asp = 1.8),
     format = "file"
   ),
   tar_target(
@@ -1411,6 +1549,7 @@ targets_niftis <- list(
 ## the list of all the target metanames ----
 
 c(
+  targets_matlab,
   targets_flynet_activations,
   targets_formula_activations,
   targets_fmri_data,
@@ -1420,6 +1559,7 @@ c(
   targets_metrics,
   targets_perms,
   targets_perm_results,
+  targets_metrics_matlab,
   targets_tables,
   targets_plots,
   targets_figs,
