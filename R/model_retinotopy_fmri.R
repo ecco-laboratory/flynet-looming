@@ -130,7 +130,8 @@ wrap_pred_metrics <- function (df_xval, in_groupavg = NULL, permute_order = NULL
                                             by = c("run_type",
                                                    "run_num",
                                                    "stim_type",
-                                                   "tr_num")) %>%
+                                                   "tr_num"),
+                                            copy = TRUE) %>%
                                   # drop the real TRs
                                   select(-tr_num) %>% 
                                   rename(tr_num = tr_num_new)
@@ -374,10 +375,8 @@ fit_xval <- function (in_x, in_y, n_folds = NULL, predictor_cols = starts_with("
 
 ## calculating permuted p-values ----
 
-combine_perms_studyforrest <- function (fmri_data,
+combine_perms_studyforrest <- function (permuted_trs,
                                         combined_preds_metrics) {
-  permuted_trs <- get_permuted_order(fmri_data, n_cycles = 5L)
-  
   super_perms <- map(combined_preds_metrics,
                      \(x) wrap_perms(permuted_trs = permuted_trs,
                                      preds_together = x$together$preds,
