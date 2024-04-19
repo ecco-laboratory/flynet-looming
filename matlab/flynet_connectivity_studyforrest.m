@@ -1,6 +1,6 @@
 %% setup
 % library things
-addpath('/home/data/eccolab/Code/GitHub/spm12/spm12');
+addpath('/home/data/eccolab/Code/GitHub/spm12');
 addpath(genpath('/home/data/eccolab/Code/GitHub/CanlabCore/CanlabCore'));
 
 % paths that it's cleaner to set up top?
@@ -12,9 +12,9 @@ studyforrest_dir = '/home/data/eccolab/studyforrest-data-phase2';
 % out_fstring: a printf-compatible format string that will be used for output filenames
 
 %% EMERGENCY SETTING THOSE VARIABLES IF NOT RUNNING FROM TARGETS
-% sc_data_path = fullfile(studyforrest_dir, 'fmri_data_canlabtooled_sc.mat');
-% studyforrest_activation_path = fullfile(studyforrest_dir, 'flynet_convolved_timecourses.csv');
-% out_fstring = '%smap_flynet_connectivity_contrast.nii';
+sc_data_path = fullfile(studyforrest_dir, 'fmri_data_canlabtooled_sc.mat');
+studyforrest_activation_path = fullfile(studyforrest_dir, 'flynet_convolved_timecourses.csv');
+out_fstring = '%smap_flynet_connectivity_contrast.nii';
 
 %% load in data from targets paths
 load(sc_data_path)
@@ -116,7 +116,7 @@ mean_vox_corr_wb_diff = squeeze(mean(vox_corr_wb_diff, "omitnan"));
 mean_vox_corr_wb_diff(isnan(mean_vox_corr_wb_diff)) = 0;
 
 %% permutation testing apparently
-n_permutations = 10000;
+n_permutations = 5000;
 tic;
 for it = 1:n_permutations
     time_elapsed = seconds(toc);
@@ -165,10 +165,10 @@ pvalmap = data;
 statmap.removed_voxels(statmap.removed_voxels) = false;
 pvalmap.removed_voxels(pvalmap.removed_voxels) = false;
 
-statmap.dat = mean_vox_corr_wb_diff(:)';
+statmap.dat = mean_vox_corr_wb_diff';
 % in previous of Phil's code, the p-values were neg-log-scaled for visualization. Let us continue to do this
 % this works with NaNs as 1 bc log10(1) = 0 yay
-pvalmap.dat = -1*log10(phat_vox_wb(:));
+pvalmap.dat = -1*log10(phat_vox_wb');
 statmap.fullpath = fullfile(studyforrest_dir, sprintf(out_fstring, 'stat'));
 pvalmap.fullpath = fullfile(studyforrest_dir, sprintf(out_fstring, 'pval'));
 write(statmap, 'overwrite');
