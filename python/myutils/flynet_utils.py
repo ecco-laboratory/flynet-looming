@@ -64,33 +64,6 @@ class MegaFlyNet(nn.Module):
         # God I hope this is equivalent
         return x
 
-class FlyNet(nn.Module):
-    def __init__(self) -> None:
-        super().__init__()
-        # 144 x 4 input features
-        # must be FLATTENED before feeding in to linear
-        # Remember also to flatten Baohua's weights
-        # BEFORE loading them into the layer weights attribute
-        self.linear = nn.Linear(144*4, 1)
-        self.classifier = nn.Linear(1, 1)
-    
-    def forward(self, x: torch.Tensor):
-        x = self.linear(torch.flatten(x, -2, -1))
-        # It should come out of that linear layer
-        # with shape batch x time x unit x 1
-        # THEN ReLU within batch x time x unit
-        x = nn.functional.relu(x)
-        # THEN sum across units within timepoint
-        # this should leave a batch size x time x 1 array
-        x = torch.sum(x, axis=-2)
-        x = self.classifier(x)
-        x = torch.sigmoid(x)
-        # THEN!! the comment says average but the code says sum
-        # either way, reduce across timepoints
-        x = torch.sum(x, axis=-2)
-        # and then we out!
-        return x
-
 # %%
 # Helper functions for running real videos through FlyNet
 
@@ -107,7 +80,8 @@ def convert_flow_numpy_to_tensor(frames):
 
 # %%
 # Helper functions from Baohua's little vis notebook
-# Delete these when you've figured out the RF corner zero issue
+# Used elsewhere to plug in Baohua et al's weights to a pytorch Conv2d kernel
+
 # Get the element center
 def get_element_center(leftup_corner, L):
     """
