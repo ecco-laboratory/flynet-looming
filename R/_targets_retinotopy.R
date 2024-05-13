@@ -62,7 +62,7 @@ tar_source(c("R/get_flynet_activation_timecourses.R",
              "R/get_retinotopy_fmri.R",
              "R/model_retinotopy_fmri.R",
              "R/plot_retinotopy_fmri.R",
-             "~/Repos/looming-fmri/R/utils/call-matlab.R"))
+             "R/utils/call-matlab.R"))
 
 # source("other_functions.R") # Source other scripts as needed. # nolint
 
