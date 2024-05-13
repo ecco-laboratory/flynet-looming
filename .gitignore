@@ -138,3 +138,6 @@ dmypy.json
 ignore/*
 .Rproj.user
 .Rhistory
+
+# Slurm trash
+slurm*
