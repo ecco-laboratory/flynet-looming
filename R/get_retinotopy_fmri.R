@@ -38,38 +38,6 @@ get_phil_matlab_fmri_data_studyforrest <- function (file, verbose = TRUE) {
   return (out)
 }
 
-get_phil_matlab_fmri_data_nsd <- function (file, verbose = TRUE) {
-  
-  data_mat <- R.matlab::readMat(file, verbose = verbose)
-  
-  # bc the cols in crossing must be specified in reverse .mat dims order
-  out <- crossing(voxel = 1:dim(data_mat$DATA)[4],
-                  tr_num = 1:dim(data_mat$DATA)[3],
-                  # this should reproduce the repeat structure described in NSD docs
-                  run_id = 1:dim(data_mat$DATA)[2],
-                  subj_num = 1:dim(data_mat$DATA)[1]) %>% 
-    mutate(run_id = dplyr::recode(run_id,
-                                  `1` = "bar_1",
-                                  `2` = "wedgering_1",
-                                  `3` = "floc_1",
-                                  `4` = "floc_2",
-                                  `5` = "bar_2",
-                                  `6` = "wedgering_2",
-                                  `7` = "floc_3",
-                                  `8` = "floc_4",
-                                  `9` = "bar_3",
-                                  `10` = "wedgering_3",
-                                  `11` = "floc_5",
-                                  `12` = "floc_6"))
-  
-  out %<>%
-    mutate(bold = as.vector(data_mat$DATA)) %>% 
-    filter(!startsWith(run_id, "floc")) %>% 
-    separate(run_id, into = c("run_type", "run_num"))
-  
-  return (out)
-}
-
 proc_phil_matlab_fmri_data <- function (in_data, tr_start = NULL, tr_end = NULL) {
   # if start and end TRs to filter are not specified,
   # default to all the TRs
@@ -87,28 +55,6 @@ proc_phil_matlab_fmri_data <- function (in_data, tr_start = NULL, tr_end = NULL)
     group_by(run_type, run_num, subj_num) %>% 
     mutate(across(starts_with("voxel"), \(x) c(scale(x)))) %>% 
     ungroup()
-  
-  return (out)
-}
-
-label_stim_types_nsd <- function (in_data) {
-  out <- in_data %>% 
-    mutate(stim_type = case_when(run_type == "bar" & tr_num < 16 ~ "blank_screen",
-                                 run_type == "bar" & tr_num < 45 ~ "bar_right",
-                                 run_type == "bar" & tr_num < 80 ~ "bar_up",
-                                 run_type == "bar" & tr_num < 113 ~ "bar_left",
-                                 run_type == "bar" & tr_num < 156 ~ "bar_down",
-                                 run_type == "bar" & tr_num < 188 ~ "bar_upright",
-                                 run_type == "bar" & tr_num < 221 ~ "bar_upleft",
-                                 run_type == "bar" & tr_num < 252 ~ "bar_downleft",
-                                 run_type == "bar" & tr_num < 281 ~ "bar_downright",
-                                 run_type == "wedgering" & tr_num < 22 ~ "blank_screen", 
-                                 run_type == "wedgering" & tr_num < 86 ~ "wedge_counter", 
-                                 run_type == "wedgering" & tr_num < 147 ~ "ring_expand", 
-                                 run_type == "wedgering" & tr_num < 150 ~ "blank_screen", 
-                                 run_type == "wedgering" & tr_num < 214 ~ "wedge_clock", 
-                                 run_type == "wedgering" & tr_num < 275 ~ "ring_contract", 
-                                 TRUE ~ "blank_screen"))
   
   return (out)
 }
