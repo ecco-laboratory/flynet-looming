@@ -5,16 +5,6 @@ addpath('/home/data/eccolab/Code/GitHub/spm12/spm12'); % per spm docs, do not ge
 addpath(genpath('/home/data/eccolab/Code/GitHub/CanlabCore/CanlabCore'));
 addpath(genpath('/home/data/eccolab/Code/GitHub/Neuroimaging_Pattern_Masks'));
 
-
-% TODO: delete this old commented stuff when we know this is callable through targets
-% specify project paths
-% nsd_dir = '/home/data/shared/NSD/nsddata_timeseries/ppdata';
-% nsd_subdir = 'func1mm/timeseries';
-
-% save
-% save('/home/mthieu/bold_retinotopy_nsd_sc.mat', 'data_nsd_sc')
-% save('/home/mthieu/bold_retinotopy_nsd_v1.mat', 'data_nsd_v1')
-
 %% variables that must be specified before the script is called
 % project_dir
 % data_subdir
