@@ -12,39 +12,33 @@ from video_dtw_utils import read_and_calc_video_flow
 from flynet_utils import MegaFlyNet, convert_flow_numpy_to_tensor
 
 # %%
-# Paths and shit
-
-# Need to set repo path because I suspect
-# when slurm runs this it doesn't immediately know what is up
-repo_path = '/home/mthieu/Repos/emonet-py/'
-model_path = os.path.join(repo_path, 'ignore', 'models')
-
-# %%
 # Argle parser
 parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
 parser.add_argument(
     '-l',
     '--length',
+    default=132,
     type=int,
     help="Image length/height/width in px to resize to (imgs are square)"
 )
 parser.add_argument(
-    '-p',
-    '--path',
+    '-i',
+    '--in_paths',
+    nargs='*',
     type=str,
-    help="Root folder for videos and shit"
+    help="Paths to videos. Input multiple paths for multiple videos"
 )
 parser.add_argument(
-    '-v',
-    '--videos',
+    '-o',
+    '--out_path',
     type=str,
-    help="Subfolder for videos specifically"
+    help="Path to write out overall activations file for all videos input"
 )
 parser.add_argument(
-    '-m',
-    '--metadata',
+    '-w',
+    '--weight_path',
     type=str,
-    help="Subfolder for metadata and output files"
+    help="Which model path to pull pre-trained kernel filter from?"
 )
 parser.add_argument(
     '-q',
@@ -60,29 +54,21 @@ parser.add_argument(
     type=int,
     help="FlyNet kernel stride length (passed onto PyTorch)"
 )
-parser.add_argument(
-    '-u',
-    '--units',
-    default=256,
-    type=int,
-    choices=[32,256],
-    help="Which model (32 or 256 units) to pull pre-trained kernel filter from?"
-)
+
 args = vars(parser.parse_args())
 
 imgsize = args['length']
 stride = args['stride']
-n_units = args['units']
-base_path = args['path']
+weight_path = args['weight_path']
 quantity_to_calc = args['quantity_to_calc']
-video_path = os.path.join(base_path, args['videos'])
-metadata_path = os.path.join(base_path, args['metadata'])
+video_paths = args['in_paths']
+out_path = args['out_path']
 
 # %%
 # Init MegaFlyNet instance
 # stride = 8 seems like an acceptable amount of overlap between kernel steps
 megaflynet = MegaFlyNet(conv_stride=stride)
-megaflynet.load_state_dict(torch.load(os.path.join(model_path, 'MegaFlyNet{}.pt'.format(n_units))))
+megaflynet.load_state_dict(torch.load(weight_path))
 
 # Frozen! No training!
 for param in megaflynet.parameters():
@@ -134,45 +120,28 @@ def calc_flynet_activation(flow, convmodel):
 # But actually it's better to calculate flow fresh in case we change the img size
 
 out_all = []
-
-for in_folder, pwd, files in os.walk(video_path):
-    # get the subfolder name
-    in_subfolder = in_folder.split('/')[-1]
-
-    # fencepost condition to skip if it's not actually a proper subfolder
-    # but the current folder
-    if in_subfolder == args['videos']:
-        continue
     
-    for in_name in tqdm(files, desc=in_subfolder, leave=False):
-        if in_name.endswith('.mp4'):
-            in_file = os.path.join(in_folder, in_name)
+for in_file in tqdm(video_paths, desc='Stimulus videos'):
 
-            # Get that fresh flow
-            flow = read_and_calc_video_flow(in_file, resize=(imgsize,imgsize))
-            flow = convert_flow_numpy_to_tensor(flow)
+    # Get that fresh flow
+    flow = read_and_calc_video_flow(in_file, resize=(imgsize,imgsize))
+    flow = convert_flow_numpy_to_tensor(flow)
 
-            # Actually calculate stuff
-            if quantity_to_calc == 'hit_probs':
-                out = calc_flynet_hit_prob(flow, megaflynet)
-            elif quantity_to_calc == 'activations':
-                out = calc_flynet_activation(flow, megaflynet)            
+    # Actually calculate stuff
+    if quantity_to_calc == 'hit_probs':
+        out = calc_flynet_hit_prob(flow, megaflynet)
+    elif quantity_to_calc == 'activations':
+        out = calc_flynet_activation(flow, megaflynet)            
 
-            # Manually add the video name on as an index now as well
-            out['video'] = in_name
-            out = out.set_index('video', append=True)
+    # Manually add the video name on as an index now as well
+    out['video'] = os.path.split(in_file)[1]
+    out = out.set_index('video', append=True)
 
-            # Now bind onto the superlists
-            out_all.append(out)
+    # Now bind onto the superlists
+    out_all.append(out)
 
-out_all = pd.concat(out_all)    
-out_all.to_csv(os.path.join(metadata_path, 'flynet_{}x{}_stride{}_{}.csv'.format(imgsize, imgsize, stride, quantity_to_calc)))
-
-# %%
-# Figuring out how to read in the images
-
-# Read in image
-# Convert to numpy array
-# Index only the R and B dimensions
-# Convert to np.float32 before doing ANY maths because int math is crazy
-# Re-center (subtract 128)
+out_all = pd.concat(out_all)
+# old file naming convention that was set in this script
+# that other targets may be expecting
+# 'flynet_{}x{}_stride{}_{}.csv'.format(imgsize, imgsize, stride, quantity_to_calc)
+out_all.to_csv(out_path)
