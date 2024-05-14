@@ -29,9 +29,9 @@ get_flynet_activation <- function (file, fps, tr_length, tr_start_offset) {
                   # bc we're applying new col names
                   skip = 1) %>% 
     # note: the first flow-frame is anchored to the second real frame
-    # but do not add the +1 frame_num adjustment 
+    # but only adjust +1 for zero indexing, not +2 for the flow frame lead 
     # so that the last frame doesn't start rounding up to a TR past the stimulus
-    mutate(frame_num = (1:n()), 
+    mutate(frame_num = frame_num + 1, 
            # int division starts TR count at 0, bump up to 1
            # plus whatever TR offset if the scan starts before the video plays
            tr_num = as.integer(frame_num %/% (fps * tr_length) + tr_start_offset + 1)) %>% 
