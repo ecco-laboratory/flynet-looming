@@ -16,7 +16,8 @@ library(rlang)
 
 # Set target options:
 tar_option_set(
-  packages = c("tidymodels",
+  packages = c("osfr",
+               "tidymodels",
                "poissonreg",
                "tidyverse",
                "magrittr",
@@ -62,11 +63,25 @@ Sys.setenv(PATH = stringr::str_remove_all(Sys.getenv("PATH"), "/opt/software/ana
 
 weights_flynet <- tar_read(weights_flynet, store = here::here("ignore", "_targets", "subjective"))
 
+osf_project_id <- "as4vm"
+osf_local_download_path <- here::here("ignore", "datasets", "eyeblink")
+dir.create(osf_local_download_path, showWarnings = FALSE)
+
 targets_raw_data <- list(
   tar_target(
     name = blink.counts_ayzenberg2015_raw,
-    command = list.files("/home/mthieu/Repos/lourenco_ilooming",
-                         full.names = TRUE),
+    command = {
+      
+      osf_retrieve_node(osf_project_id) %>% 
+        osf_ls_files() %>% 
+        filter(name == "eyeblink") %>% 
+        osf_ls_files() %>% 
+        filter(name == "rawdata") %>% 
+        osf_download(path = osf_local_download_path)
+      
+      list.files(file.path(osf_local_download_path, "rawdata"),
+                 full.names = TRUE)
+      },
     format = "file"
   )
 )
@@ -143,8 +158,19 @@ targets_python <- list(
 targets_stimuli <- list(
   tar_target(
     name = images_ayzenberg2015,
-    command = list.files("~/Repos/lourenco_ilooming/stimuli/images",
-                         full.names = TRUE),
+    # TODO: Point this to where OSF will download to
+    command = {
+      
+      osf_retrieve_node(osf_project_id) %>% 
+        osf_ls_files() %>% 
+        filter(name == "eyeblink") %>% 
+        osf_ls_files() %>% 
+        filter(name == "stimuli") %>% 
+        osf_download(path = osf_local_download_path)
+      
+      list.files(file.path(osf_local_download_path, "stimuli"),
+                 full.names = TRUE)
+      },
     format = "file"
   ),
   tar_target(
@@ -185,32 +211,41 @@ targets_activations <- list(
   tar_target(
     name = activations_ayzenberg2015,
     command = {
-      weights_flynet
-      videos_ayzenberg2015
+      video_paths <- paste(videos_ayzenberg2015, collapse = " ")
+      out_path <- here::here("ignore",
+                             "outputs",
+                             "eyeblink",
+                             "flynet_activations.csv") 
+      
       system2("python",
               args = c(py_calc_flynet_activations,
                        "-l 132",
-                       "-p /home/mthieu/Repos/lourenco_ilooming",
-                       "-v stimuli/videos",
-                       "-m .",
+                       paste("-i", video_paths),
+                       paste("-o", out_path),
+                       paste("-w", weights_flynet),
                        "-q activations"))
-      "/home/mthieu/Repos/lourenco_ilooming/flynet_132x132_stride8_activations.csv"
+      out_path
     },
     format = "file"
   ),
   tar_target(
     name = hit.probs_ayzenberg2015_raw,
     command = {
-      weights_flynet
-      videos_ayzenberg2015
+      video_paths <- paste(videos_ayzenberg2015, collapse = " ")
+      out_path <- here::here("ignore",
+                             "outputs",
+                             "eyeblink",
+                             "flynet_hitprobs.csv")
+      
       system2("python",
               args = c(py_calc_flynet_activations,
                        "-l 132",
-                       "-p /home/mthieu/Repos/lourenco_ilooming",
-                       "-v stimuli/videos",
-                       "-m .",
+                       paste("-i", video_paths),
+                       paste("-o", out_path),
+                       paste("-w", weights_flynet),
                        "-q hit_probs"))
-      "/home/mthieu/Repos/lourenco_ilooming/flynet_132x132_stride8_hit_probs.csv"
+
+      out_path
     },
     format = "file"
   ),
@@ -445,7 +480,10 @@ targets_tables <- list(
   tar_target(
     name = summary_blink.by.hit,
     command = {
-      out_path <- "/home/data/eccolab/SPLaT/supptable_eyeblink_model_perf.csv"
+      out_path <- here::here("ignore",
+                             "outputs",
+                             "retinotopy",
+                             "supptable_eyeblink_model_perf.csv")
       
       list(flynet = model_blink.by.hit_flynet,
            tauinv = model_blink.by.hit_only.tau.inv,
