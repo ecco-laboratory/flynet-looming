@@ -51,7 +51,7 @@ plan(batchtools_slurm,
                       # The permutation tests for V1 are getting huge, they seem to need ~4 GB
                       # The Matlab-based permutation tests for model-based connectivity are also hefty
                       # they perform best with... 32 GB?! Just 2 b safe
-                      memory = 32000L,
+                      memory = 4000L,
                       partition = "day-long"))
 # These parameters are relevant later inside the permutation testing targets
 n_batches <- 500
@@ -62,9 +62,11 @@ tar_source(c("R/get_flynet_activation_timecourses.R",
              "R/get_retinotopy_fmri.R",
              "R/model_retinotopy_fmri.R",
              "R/plot_retinotopy_fmri.R",
-             "R/utils/call-matlab.R"))
+             "R/utils/call-matlab.R",
+             "R/utils/get-nifti.R",
+             "R/utils/call-spm.R"))
 
-matlab_path <- "/opt/MATLAB/R2022a/bin"
+matlab_path <- "/opt/MATLAB/R2024a/bin"
 
 ## data files from other people's stuff ----
 
@@ -73,6 +75,23 @@ weights_flynet <- tar_read(weights_flynet, store = here::here("ignore", "_target
 targets_stimuli <- list(
   tar_target(
     name = videos_studyforrest,
+    # NOTE 2024-05-13!!! 
+    # Original analyses were run using mp4 conversions of these original mkv videos
+    # which are saved elsewhere
+    # The flow extracted from the mkvs is EVER SO SLIGHTLY different (like seriously, correlation > .998)
+    # so double check that all the results replicate with the new weights before you ship this to production
+    command = list.files(here::here("ignore", 
+                                    "datasets",
+                                    "studyforrest-data-phase2",
+                                    "code",
+                                    "stimulus",
+                                    "retinotopic_mapping",
+                                    "videos"),
+                         full.names = TRUE),
+    format = "file"
+  ),
+  tar_target(
+    name = videos_studyforrest_mov,
     # NOTE 2024-05-13!!! 
     # Original analyses were run using mp4 conversions of these original mkv videos
     # which are saved elsewhere
@@ -89,6 +108,11 @@ targets_stimuli <- list(
 ## matlab scripts (yuck) ----
 
 targets_matlab <- list(
+  tar_target(
+    name = matlab_spmbatch_realign.norm,
+    command = here::here("matlab", "preproc_fmri_data_spm.m"),
+    format = "file"
+  ),
   tar_target(
     name = matlab_preproc_mask_fmri_data_canlabtools,
     command = here::here("matlab", "preproc_mask_fmri_data_canlabtools.m"),
@@ -121,11 +145,11 @@ targets_flynet_activations <- list(
                  full.names = TRUE)
       
       video_paths <- paste(videos_studyforrest, collapse = " ")
-      
       out_path <- here::here("ignore",
                              "outputs",
                              "retinotopy",
-                             "studyforrest_flynet_activations.csv")
+                             "flynet_activations.csv")
+      
       system2(here::here("env", "bin", "python"),
               args = c(py_calc_flynet_activations,
                        "-l 132", # resized flow-frame height/width
@@ -141,7 +165,6 @@ targets_flynet_activations <- list(
   ),
   tar_target(
     name = flynet_activations_studyforrest,
-    # TODO: Update this function to work from one overall path and not stim-specific activation csvs
     command = get_flynet_activation_studyforrest(flynet_activations_raw_studyforrest),
   ),
   tar_target(
@@ -172,7 +195,7 @@ targets_flynet_activations <- list(
       out_path <- here::here("ignore",
                              "outputs",
                              "retinotopy",
-                             "studyforrest_flynet_convolved_timecourses.csv")
+                             "flynet_convolved_timecourses.csv")
       
       flynet_activations_convolved_studyforrest %>% 
         select(stim_type = run_type, tr_num, everything()) %>% 
@@ -237,16 +260,101 @@ targets_formula_activations <- list(
 
 ## fmri data input and preproc ----
 
+valid_studyforrest_retinotopy_subjs <- list.files(here::here("ignore", "datasets", "studyforrest-data-phase2"), 
+                                                  pattern=".*task-retmap.*run-1_bold.nii.gz", 
+                                                  recursive = TRUE) %>% 
+  stringr::str_split_i(pattern = "/", i = 1) %>% 
+  unique()
+
 targets_fmri_data <- list(
+  tar_map(
+    values = tibble(subject = valid_studyforrest_retinotopy_subjs),
+    tar_target(
+      bold_gz_wedge.clock,
+      command = search_niftis_gz(subj_id = subject,
+                                 task_id = "task-retmapclw"),
+      format = "file"
+    ),
+    tar_target(
+      bold_wedge.clock,
+      command = gunzip_nifti(bold_gz_wedge.clock),
+      format = "file"
+    ),
+    tar_target(
+      bold_gz_wedge.counter,
+      command = search_niftis_gz(subj_id = subject,
+                                 task_id = "task-retmapccw"),
+      format = "file"
+    ),
+    tar_target(
+      bold_wedge.counter,
+      command = gunzip_nifti(bold_gz_wedge.counter),
+      format = "file"
+    ),
+    tar_target(
+      bold_gz_ring.contract,
+      command = search_niftis_gz(subj_id = subject,
+                                 task_id = "task-retmapcon"),
+      format = "file"
+    ),
+    tar_target(
+      bold_ring.contract,
+      command = gunzip_nifti(bold_gz_ring.contract),
+      format = "file"
+    ),
+    tar_target(
+      bold_gz_ring.expand,
+      command = search_niftis_gz(subj_id = subject,
+                                 task_id = "task-retmapexp"),
+      format = "file"
+    ),
+    tar_target(
+      bold_ring.expand,
+      command = gunzip_nifti(bold_gz_ring.expand),
+      format = "file"
+    ),
+    tar_target(
+      bold_realign.norm,
+      # these will get written into the studyforrest subject/ses directories
+      # because SPM will not let you write preprocessed files into a directory other than
+      # where the original niftis were saved
+      command = spm_realign.norm_studyforrest(bold_wedge.counter,
+                                              bold_wedge.clock,
+                                              bold_ring.contract,
+                                              bold_ring.expand,
+                                     script = matlab_spmbatch_realign.norm),
+      format = "file"
+    )
+  ),
+  # TODO: get this target to aggregate across all bold_realign.norm
   tar_target(
     name = fmri_mat_sc_studyforrest,
     command = {
-      out_path <- "/home/data/eccolab/studyforrest-data-phase2/fmri_data_canlabtooled_sc.mat"
-      
+      out_path <- here::here("ignore",
+                             "outputs",
+                             "retinotopy",
+                             "fmri_data_canlabtooled_sc.mat")
+
+      # this actually does need the data to come in by subject
       matlab_commands <- c(
-        assign_variable("project_dir", "/home/data/eccolab/studyforrest-data-phase2"),
-        assign_variable("data_subdir", "ses-localizer/func"),
-        assign_variable("sub_prefix", "sub-"),
+        rvec_to_matlabcell(
+          list(
+            bold_realign.norm_sub.01, 
+            bold_realign.norm_sub.02, 
+            bold_realign.norm_sub.03,
+            bold_realign.norm_sub.04, 
+            bold_realign.norm_sub.05, 
+            bold_realign.norm_sub.06,
+            bold_realign.norm_sub.09, 
+            bold_realign.norm_sub.10, 
+            bold_realign.norm_sub.14,
+            bold_realign.norm_sub.15, 
+            bold_realign.norm_sub.16, 
+            bold_realign.norm_sub.17,
+            bold_realign.norm_sub.18, 
+            bold_realign.norm_sub.19, 
+            bold_realign.norm_sub.20),
+          matname = "all_files"),
         assign_variable("roi", "Bstem_SC"),
         assign_variable("out_name", out_path),
         call_script(matlab_preproc_mask_fmri_data_canlabtools)
@@ -266,12 +374,30 @@ targets_fmri_data <- list(
     command = {
       # the script now omits data from the bonky subject
       # as opposed to having one array dim filled with all 0s
-      out_path <- "/home/data/eccolab/studyforrest-data-phase2/fmri_data_canlabtooled_v1.mat"
+      out_path <- here::here("ignore",
+                             "outputs",
+                             "retinotopy",
+                             "fmri_data_canlabtooled_v1.mat")
       
       matlab_commands <- c(
-        assign_variable("project_dir", "/home/data/eccolab/studyforrest-data-phase2"),
-        assign_variable("data_subdir", "ses-localizer/func"),
-        assign_variable("sub_prefix", "sub-"),
+        rvec_to_matlabcell(
+          list(
+            bold_realign.norm_sub.01, 
+            bold_realign.norm_sub.02, 
+            bold_realign.norm_sub.03,
+            bold_realign.norm_sub.04, 
+            bold_realign.norm_sub.05, 
+            bold_realign.norm_sub.06,
+            bold_realign.norm_sub.09, 
+            bold_realign.norm_sub.10, 
+            bold_realign.norm_sub.14,
+            bold_realign.norm_sub.15, 
+            bold_realign.norm_sub.16, 
+            bold_realign.norm_sub.17,
+            bold_realign.norm_sub.18, 
+            bold_realign.norm_sub.19, 
+            bold_realign.norm_sub.20),
+          matname = "all_files"),
         assign_variable("roi", "Ctx_V1"),
         assign_variable("out_name", out_path),
         call_script(matlab_preproc_mask_fmri_data_canlabtools)
@@ -876,159 +1002,6 @@ targets_perms <- list(
   )
 )
 
-targets_perms_other <- list(
-  tar_rep2(
-    name = perms_flynet_sc_studyforrest,
-    command = {
-      metrics_only.formula_together <- metrics_only.formula_sc_studyforrest
-      metrics_only.formula_by.run.type <- metrics_only.formula_sc_studyforrest_by.run.type
-      metrics_formula_together <- metrics_formula_sc_studyforrest
-      metrics_formula_by.run.type <- metrics_formula_sc_studyforrest_by.run.type
-      
-      combined_preds_metrics <- list(flynet = list(together = list(preds = pls_pred.only_flynet_sc_studyforrest,
-                                                                   metrics = metrics_flynet_sc_studyforrest),
-                                                   by.run.type = list(preds = pls_pred.only_flynet_sc_studyforrest_by.run.type,
-                                                                      metrics = metrics_flynet_sc_studyforrest_by.run.type)),
-                                     tau_inv = list(together = list(preds = pls_pred.only_only.tauinv_sc_studyforrest,
-                                                                    metrics = metrics_only.formula_together %>% 
-                                                                      filter(parameter == "tau_inv")),
-                                                    by.run.type = list(preds = pls_pred.only_only.tauinv_sc_studyforrest_by.run.type,
-                                                                       metrics = metrics_only.formula_by.run.type %>% 
-                                                                         filter(parameter == "tau_inv"))),
-                                     eta = list(together = list(preds = pls_pred.only_only.eta_sc_studyforrest,
-                                                                metrics = metrics_only.formula_together %>% 
-                                                                  filter(parameter == "eta")),
-                                                by.run.type = list(preds = pls_pred.only_only.eta_sc_studyforrest_by.run.type,
-                                                                   metrics = metrics_only.formula_by.run.type %>% 
-                                                                     filter(parameter == "eta"))),
-                                     combined = list(together = list(preds = pls_pred.only_only.combined_sc_studyforrest,
-                                                                     metrics = metrics_only.formula_together %>% 
-                                                                       filter(parameter == "combined")),
-                                                     by.run.type = list(preds = pls_pred.only_only.combined_sc_studyforrest_by.run.type,
-                                                                        metrics = metrics_only.formula_by.run.type %>% 
-                                                                          filter(parameter == "combined"))),
-                                     flynet.tau_inv = list(together = list(preds = pls_pred.only_tauinv_sc_studyforrest,
-                                                                           metrics = metrics_formula_together %>% 
-                                                                             filter(parameter == "tau_inv")),
-                                                           by.run.type = list(preds = pls_pred.only_tauinv_sc_studyforrest_by.run.type,
-                                                                              metrics = metrics_formula_by.run.type %>% 
-                                                                                filter(parameter == "tau_inv"))),
-                                     flynet.eta = list(together = list(preds = pls_pred.only_eta_sc_studyforrest,
-                                                                       metrics = metrics_formula_together %>% 
-                                                                         filter(parameter == "eta")),
-                                                       by.run.type = list(preds = pls_pred.only_eta_sc_studyforrest_by.run.type,
-                                                                          metrics = metrics_formula_by.run.type %>% 
-                                                                            filter(parameter == "eta"))),
-                                     flynet.combined = list(together = list(preds = pls_pred.only_combined_sc_studyforrest,
-                                                                            metrics = metrics_formula_together %>% 
-                                                                              filter(parameter == "combined")),
-                                                            by.run.type = list(preds = pls_pred.only_combined_sc_studyforrest_by.run.type,
-                                                                               metrics = metrics_formula_by.run.type %>% 
-                                                                                 filter(parameter == "combined"))))
-      
-      combine_perms_studyforrest(permuted_trs = permuted_trs_studyforrest$permuted_trs,
-                                 combined_preds_metrics = combined_preds_metrics)
-    },
-    permuted_trs_studyforrest
-  ),
-  tar_rep2(
-    name = perms_flynet_v1_studyforrest,
-    command = {
-      metrics_only.formula_together <- metrics_only.formula_v1_studyforrest
-      metrics_only.formula_by.run.type <- metrics_only.formula_v1_studyforrest_by.run.type
-      metrics_formula_together <- metrics_formula_v1_studyforrest
-      metrics_formula_by.run.type <- metrics_formula_v1_studyforrest_by.run.type
-      
-      combined_preds_metrics <- list(flynet = list(together = list(preds = pls_flynet_v1_studyforrest,
-                                                                   metrics = metrics_flynet_v1_studyforrest),
-                                                   by.run.type = list(preds = pls_flynet_v1_studyforrest_by.run.type,
-                                                                      metrics = metrics_flynet_v1_studyforrest_by.run.type)),
-                                     tau_inv = list(together = list(preds = pls_only.tauinv_v1_studyforrest,
-                                                                    metrics = metrics_only.formula_together %>% 
-                                                                      filter(parameter == "tau_inv")),
-                                                    by.run.type = list(preds = pls_only.tauinv_v1_studyforrest_by.run.type,
-                                                                       metrics = metrics_only.formula_by.run.type %>% 
-                                                                         filter(parameter == "tau_inv"))),
-                                     eta = list(together = list(preds = pls_only.eta_v1_studyforrest,
-                                                                metrics = metrics_only.formula_together %>% 
-                                                                  filter(parameter == "eta")),
-                                                by.run.type = list(preds = pls_only.eta_v1_studyforrest_by.run.type,
-                                                                   metrics = metrics_only.formula_by.run.type %>% 
-                                                                     filter(parameter == "eta"))),
-                                     combined = list(together = list(preds = pls_only.combined_v1_studyforrest,
-                                                                     metrics = metrics_only.formula_together %>% 
-                                                                       filter(parameter == "combined")),
-                                                     by.run.type = list(preds = pls_only.combined_v1_studyforrest_by.run.type,
-                                                                        metrics = metrics_only.formula_by.run.type %>% 
-                                                                          filter(parameter == "combined"))),
-                                     flynet.tau_inv = list(together = list(preds = pls_tauinv_v1_studyforrest,
-                                                                           metrics = metrics_formula_together %>% 
-                                                                             filter(parameter == "tau_inv")),
-                                                           by.run.type = list(preds = pls_tauinv_v1_studyforrest_by.run.type,
-                                                                              metrics = metrics_formula_by.run.type %>% 
-                                                                                filter(parameter == "tau_inv"))),
-                                     flynet.eta = list(together = list(preds = pls_eta_v1_studyforrest,
-                                                                       metrics = metrics_formula_together %>% 
-                                                                         filter(parameter == "eta")),
-                                                       by.run.type = list(preds = pls_eta_v1_studyforrest_by.run.type,
-                                                                          metrics = metrics_formula_by.run.type %>% 
-                                                                            filter(parameter == "eta"))),
-                                     flynet.combined = list(together = list(preds = pls_combined_v1_studyforrest,
-                                                                            metrics = metrics_formula_together %>% 
-                                                                              filter(parameter == "combined")),
-                                                            by.run.type = list(preds = pls_combined_v1_studyforrest_by.run.type,
-                                                                               metrics = metrics_formula_by.run.type %>% 
-                                                                                 filter(parameter == "combined"))))
-      
-      combine_perms_studyforrest(permuted_trs = permuted_trs_studyforrest$permuted_trs,
-                                 combined_preds_metrics = combined_preds_metrics)
-    },
-    permuted_trs_studyforrest
-  )
-)
-
-targets_perm_results <- list(
-  tar_target(
-    name = perm.pvals_flynet_sc_studyforrest,
-    command = {
-      bind_rows(metrics_flynet_overall %>% mutate(parameter = "flynet"), 
-                metrics_formula_overall %>% mutate(parameter = paste0("flynet.", parameter)), 
-                metrics_only.formula_overall) %>% 
-        select(parameter, perf) %>% 
-        unnest(perf) %>% 
-        group_by(parameter, stim_type, subj_num) %>% 
-        summarize(r.model = mean(r_model), 
-                  .groups = "drop")
-      
-      calc_perm_pvals(metrics_flynet_sc_studyforrest,
-                      metrics_flynet_sc_studyforrest_by.run.type,
-                      perms_flynet_sc_studyforrest)
-      }
-  ),
-  tar_target(
-    name = perm.pvals_formula_sc_studyforrest,
-    command = calc_perm_pvals(metrics_formula_sc_studyforrest,
-                              metrics_formula_sc_studyforrest_by.run.type,
-                              perms_formula_sc_studyforrest,
-                              extra_grouping_cols = parameter)
-  ),
-  tar_target(
-    name = perm.pvals_flynet_v1_studyforrest,
-    command = calc_perm_pvals(metrics_flynet_v1_studyforrest,
-                              metrics_flynet_v1_studyforrest_by.run.type,
-                              perms_flynet_v1_studyforrest,
-                              has_voxel_num = FALSE)
-  ),
-  tar_target(
-    name = perm.pvals_formula_v1_studyforrest,
-    command = calc_perm_pvals(metrics_formula_v1_studyforrest,
-                              metrics_formula_v1_studyforrest_by.run.type,
-                              perms_formula_v1_studyforrest,
-                              extra_grouping_cols = parameter,
-                              has_voxel_num = FALSE)
-  )
-)
-
 ## other model outputs (in matlab from phil) ----
 
 targets_metrics_matlab <- list(
@@ -1036,15 +1009,34 @@ targets_metrics_matlab <- list(
     name = statmaps_connectivity_studyforrest,
     command = {
       
-      out_fstring <- "%smap_flynet_connectivity_contrast.nii"
-      out_paths <- file.path("/home/data/eccolab/studyforrest-data-phase2", 
-                             sprintf(out_fstring, c("stat", "pval"))
-      )
+      out_fstring <- here::here("ignore",
+                                "outputs",
+                                "retinotopy",
+                                "%smap_flynet_connectivity_contrast.nii")
+      out_paths <- sprintf(out_fstring, c("stat", "pval"))
 
       matlab_commands <- c(
+        rvec_to_matlabcell(
+          list(
+            bold_realign.norm_sub.01, 
+            bold_realign.norm_sub.02, 
+            bold_realign.norm_sub.03,
+            bold_realign.norm_sub.04, 
+            bold_realign.norm_sub.05, 
+            bold_realign.norm_sub.06,
+            bold_realign.norm_sub.09, 
+            bold_realign.norm_sub.10, 
+            bold_realign.norm_sub.14,
+            bold_realign.norm_sub.15, 
+            bold_realign.norm_sub.16, 
+            bold_realign.norm_sub.17,
+            bold_realign.norm_sub.18, 
+            bold_realign.norm_sub.19, 
+            bold_realign.norm_sub.20),
+          matname = "all_files"),
         assign_variable("sc_data_path", fmri_mat_sc_studyforrest),
         assign_variable("studyforrest_activation_path", flynet_activations_convolved_studyforrest_prematlab),
-        assign_variable("out_fstring", "%smap_flynet_connectivity_%s.nii"),
+        assign_variable("out_fstring", out_fstring),
         call_script(matlab_calc_encoding_model_connectivity)
       )
       
@@ -1065,7 +1057,10 @@ targets_tables <- list(
   tar_target(
     name = summary_metrics_all_studyforrest,
     command = {
-      out_path <- "/home/data/eccolab/SPLaT/supptable_retinotopy_model_perf.csv"
+      out_path <- here::here("ignore",
+                             "outputs",
+                             "retinotopy",
+                             "supptable_retinotopy_model_perf.csv")
       metrics_all_studyforrest %>% 
         mutate(is_expand = if_else(stim_type == "ring_expand", 
                                    "Expanding rings", 
@@ -1121,59 +1116,6 @@ targets_plots <- list(
     name = schematic_flynet_activation_timecourse,
     command = plot_flynet_activations_convolved(flynet_activations_convolved_studyforrest,
                                                 run_types = "ring_expand")
-  ),
-  tar_target(
-    name = boxplot_cv.r_studyforrest,
-    command = {
-      metrics_sc <- bind_rows("all stimuli" = metrics_flynet_sc_studyforrest,
-                              "stim-specific" = metrics_flynet_sc_studyforrest_by.run.type,
-                              .id = "fit_type") %>% 
-        mutate(model_type = "Collision detection model")
-      
-      metrics_sc_only.formula <- bind_rows("all stimuli" = metrics_only.formula_sc_studyforrest,
-                                           "stim-specific" = metrics_only.formula_sc_studyforrest_by.run.type,
-                                           .id = "fit_type") %>% 
-        rename(model_type = parameter) %>% 
-        mutate(model_type = fct_recode(model_type,
-                                       "Inverse tau" = "tau_inv",
-                                       "Eta" = "eta",
-                                       "Inverse tau and eta" = "combined"))
-      
-      metrics_sc_formula <- bind_rows("all stimuli" = metrics_formula_sc_studyforrest,
-                                      "stim-specific" = metrics_formula_sc_studyforrest_by.run.type,
-                                      .id = "fit_type") %>% 
-        rename(model_type = parameter) %>% 
-        mutate(model_type = fct_recode(model_type,
-                                      "Collision detection + inverse tau" = "tau_inv",
-                                      "Collision detection + eta" = "eta",
-                                      "Collision detection + inverse tau and eta" = "combined"))
-      
-      metrics_v1 <- bind_rows("all stimuli" = metrics_flynet_v1_studyforrest,
-                              "stim-specific" = metrics_flynet_v1_studyforrest_by.run.type,
-                              .id = "fit_type") %>% 
-        mutate(model_type = "Collision detection model")
-      
-      metrics_v1_only.formula <- bind_rows("all stimuli" = metrics_only.formula_v1_studyforrest,
-                                           "stim-specific" = metrics_only.formula_v1_studyforrest_by.run.type,
-                                           .id = "fit_type") %>% 
-        rename(model_type = parameter) %>% 
-        mutate(model_type = fct_recode(model_type,
-                                       "Inverse tau" = "tau_inv",
-                                       "Eta" = "eta",
-                                       "Inverse tau and eta" = "combined"))
-      
-      metrics_v1_formula <- bind_rows("all stimuli" = metrics_formula_v1_studyforrest,
-                                      "stim-specific" = metrics_formula_v1_studyforrest_by.run.type,
-                                      .id = "fit_type") %>% 
-        rename(model_type = parameter) %>% 
-        mutate(model_type = fct_recode(model_type,
-                                       "Collision detection + inverse tau" = "tau_inv",
-                                       "Collision detection + eta" = "eta",
-                                       "Collision detection + inverse tau and eta" = "combined"))
-      
-      plot_boxplot_cv_r_studyforrest(metrics_sc = bind_rows(metrics_sc, metrics_sc_only.formula, metrics_sc_formula),
-                                     metrics_v1 = bind_rows(metrics_v1, metrics_v1_only.formula, metrics_v1_formula))
-      }
   ),
   tar_target(
     name = boxplot_mini_cv.r_sc_studyforrest,
@@ -1308,23 +1250,6 @@ targets_figs <- list(
     format = "file"
   ),
   tar_target(
-    name = fig_boxplot_cv.r_studyforrest,
-    command = ggsave(here::here("ignore", "figs", "retinotopy_boxplot_cv.r_studyforrest.svg"),
-                     plot = boxplot_cv.r_studyforrest + 
-                       # previously was using "#348338" for the pRF
-                       scale_fill_viridis_d(begin = 0.3, end = 0.7, option = "magma") +
-                       theme_bw(base_size = 10) +
-                       theme(legend.position = c(0,0),
-                             legend.justification = c(0,0),
-                             legend.background = element_blank(),
-                             legend.title = element_blank(),
-                             plot.background = element_rect(fill = "transparent")),
-                     width = 1600,
-                     height = 1200,
-                     units = "px"),
-    format = "file"
-  ),
-  tar_target(
     name = fig_boxplot_mini_cv.r_sc_studyforrest,
     command = plot_grid(boxplot_mini_cv.r_sc_studyforrest + 
                           theme_bw(base_size = 12) +
@@ -1411,7 +1336,8 @@ targets_figs <- list(
 targets_niftis <- list(
   tar_target(
     name = nifti.path_sc,
-    command = "/home/data/eccolab/studyforrest-data-phase2/SC_mask_vox_indx.nii",
+    # TODO: generate this from canlabtools script
+    command = here::here("ignore", "utils", "retinotopy", "SC_mask_vox_indx.nii"),
     format = "file"
   ),
   tar_target(
@@ -1448,7 +1374,7 @@ targets_niftis <- list(
       
       write_statmap_nifti(metric_voxels = voxel_values,
                           mask_path = nifti.path_sc,
-                          out_path = "/home/data/eccolab/studyforrest-data-phase2/SC_pls_r_ring_expand_flynet_p005.nii")
+                          out_path = here::here("ignore", "outputs", "retinotopy", "SC_pls_r_ring_expand_flynet_p005.nii"))
     },
     format = "file"
   )
@@ -1465,7 +1391,6 @@ c(
   targets_pls_v1_studyforrest,
   targets_metrics,
   targets_perms,
-  targets_perm_results,
   targets_metrics_matlab,
   targets_tables,
   targets_plots,

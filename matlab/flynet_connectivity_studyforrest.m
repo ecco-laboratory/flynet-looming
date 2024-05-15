@@ -1,20 +1,24 @@
 %% setup
 % library things
-addpath('/home/data/eccolab/Code/GitHub/spm12');
-addpath(genpath('/home/data/eccolab/Code/GitHub/CanlabCore/CanlabCore'));
+addpath('../ignore/libraries/spm12');
+addpath(genpath('../ignore/libraries/CanlabCore/CanlabCore'));
 
-% paths that it's cleaner to set up top?
-studyforrest_dir = '/home/data/eccolab/studyforrest-data-phase2';
+% this script ONLY processes studyforrest data
+% and the SPM preprocessing script upstream of this will only output the realigned/normalized niftis
+% back to the dir where the original niftis are saved
+% so we are left going into the studyforrest folder
+studyforrest_dir = '../ignore/datasets/studyforrest-data-phase2';
 
 %% variables that must be set in targets before the script is called
+% all_files: a cell array of cell arrays containing full paths to SPM-preprocessed niftis
 % sc_data_path: the output file of preproc_mask_fmri_data_canlabtools; the variable in here is called DATA
 % studyforrest_activation_path: convolved activations, CSV FROM R
-% out_fstring: a printf-compatible format string that will be used for output filenames
+% out_fstring: a printf-compatible format string that will be used for output filenames. Can include path info
 
 %% EMERGENCY SETTING THOSE VARIABLES IF NOT RUNNING FROM TARGETS
-sc_data_path = fullfile(studyforrest_dir, 'fmri_data_canlabtooled_sc.mat');
-studyforrest_activation_path = fullfile(studyforrest_dir, 'flynet_convolved_timecourses.csv');
-out_fstring = '%smap_flynet_connectivity_contrast.nii';
+% sc_data_path = fullfile(studyforrest_dir, 'fmri_data_canlabtooled_sc.mat');
+% studyforrest_activation_path = fullfile(studyforrest_dir, 'flynet_convolved_timecourses.csv');
+% out_fstring = '%smap_flynet_connectivity_contrast.nii';
 
 %% load in data from targets paths
 load(sc_data_path)
@@ -32,36 +36,24 @@ n_cycles = 5;
 cycle_length = run_length/n_cycles;
 
 %% read in whole-brain fmri data
-% get valid subjects
-subs = dir(fullfile(studyforrest_dir, 'sub-*'));
-n_valid_subs=0;
-for s=1:length(subs)
-    % in a try-catch statement so it will only read in data from subjects who did this task
-    % but not specifying a priori which subjects those are
-    try
-        % deleteme mt: cd(fullfile(studyforrest_dir, subs(s).name, 'ses-localizer', 'func'))
-        % if this subject doesn't have this scan, files will have length 0
-        files = dir(fullfile(studyforrest_dir, subs(s).name, 'ses-localizer', 'func', 'w*.nii'));
-        if isempty(files)
-            continue
-        end
-        % tracks valid subjects
-        n_valid_subs=n_valid_subs+1;
 
-        for f=1:length(files) % for each of the stimulus runs
-            data=fmri_data(fullfile(files(f).folder, files(f).name));
-            %todo - simple preproc with detrending, filter, and motion regression
-            % TODO: targets-track these txt files. are they motion regressors?
-            % and find/track the script that outputs them
-            data.X = readmatrix(fullfile(files(f).folder, ['rp_' files(f).name(2:end-4) '.txt']));
-            data = canlab_connectivity_preproc(data,'bpf',[.667/32 2/32],2);
-            % no masking. whole brain
-            
-            WB_DATA(n_valid_subs,:,:,f) = data.dat;
-        end
+% use the cell array of cell arrays to valid preprocessed BOLD paths compiled by R targets
+for s=1:length(all_files)
+    files = all_files{s};
 
-    catch
+    for f=1:length(files) % for each of the stimulus runs
+        [path, filename, ~] = fileparts(files{f});
+        data = fmri_data(files{f});
+        % simple preproc with detrending, filter, and motion regression
+        % these files are output by SPM realign/normalize along with the realigned niftis
+        % you must trust that they will be there if the realign batch has run
+        data.X = readmatrix(fullfile(path, ['rp_' filename(2:end) '.txt']));
+        data = canlab_connectivity_preproc(data,'bpf',[.667/32 2/32],2);
+        % no masking. whole brain
+        
+        WB_DATA(s,:,:,f) = data.dat;
     end
+
 end
 
 %% run phil's favorite plsregress... ONLY on each run/stim type separately
@@ -169,8 +161,8 @@ statmap.dat = mean_vox_corr_wb_diff';
 % in previous of Phil's code, the p-values were neg-log-scaled for visualization. Let us continue to do this
 % this works with NaNs as 1 bc log10(1) = 0 yay
 pvalmap.dat = -1*log10(phat_vox_wb');
-statmap.fullpath = fullfile(studyforrest_dir, sprintf(out_fstring, 'stat'));
-pvalmap.fullpath = fullfile(studyforrest_dir, sprintf(out_fstring, 'pval'));
+statmap.fullpath = sprintf(out_fstring, 'stat');
+pvalmap.fullpath = sprintf(out_fstring, 'pval');
 write(statmap, 'overwrite');
 write(pvalmap, 'overwrite');
 
