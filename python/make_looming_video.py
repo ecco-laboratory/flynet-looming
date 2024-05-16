@@ -10,19 +10,6 @@ from PIL import Image, ImageOps
 from tqdm import trange
 
 # %%
-# Set abs paths based on which cluster node we're on
-base_path = 'data/eccolab'
-if platform.node() != 'ecco':
-    base_path = os.path.join(os.sep, 'home', base_path)
-else:
-    base_path = os.path.join(os.sep, base_path)
-
-# Need to set repo path because I suspect
-# when slurm runs this it doesn't immediately know what is up
-repo_path = '/home/mthieu/Repos/emonet-py/'
-# stimuli_path = os.path.join(repo_path, 'ignore', 'stimuli', 'looming_homemade')
-
-# %%
 # Argle parser
 parser = ArgumentParser(
     prog='make_looming_video',

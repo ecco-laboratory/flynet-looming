@@ -7,7 +7,7 @@ from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 import numpy as np
 import torch
 
-from flynet_utils import MegaFlyNet, get_disk_mask
+from myutils.flynet_utils import MegaFlyNet, get_disk_mask
 
 # %%
 # Paths and shit

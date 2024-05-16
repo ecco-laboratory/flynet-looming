@@ -8,8 +8,8 @@ import numpy as np
 import pandas as pd
 import torch
 from tqdm import tqdm
-from video_dtw_utils import read_and_calc_video_flow
-from flynet_utils import MegaFlyNet, convert_flow_numpy_to_tensor
+from myutils.video_utils import read_and_calc_video_flow
+from myutils.flynet_utils import MegaFlyNet, convert_flow_numpy_to_tensor
 
 # %%
 # Argle parser
