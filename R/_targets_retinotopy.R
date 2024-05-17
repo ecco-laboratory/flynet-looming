@@ -47,12 +47,12 @@ plan(batchtools_slurm,
                       exclude = "gpu2,node3",
                       # walltime 86400 for 24h (partition day-long)
                       # walltime 1800 for 30min (partition short)
-                      walltime = 86400,
+                      walltime = 1800,
                       # The permutation tests for V1 are getting huge, they seem to need ~4 GB
                       # The Matlab-based permutation tests for model-based connectivity are also hefty
                       # they perform best with... 32 GB?! Just 2 b safe
                       memory = 4000L,
-                      partition = "day-long"))
+                      partition = "short"))
 # These parameters are relevant later inside the permutation testing targets
 n_batches <- 500
 n_reps_per_batch <- 10
@@ -70,6 +70,12 @@ matlab_path <- "/opt/MATLAB/R2024a/bin"
 
 ## data files from other people's stuff ----
 
+# note that for this and any other objects that are read in from a different targets store,
+# their updated-ness is only tracked by the original targets store
+# so updates in these upstream will _not_ automatically render targets in this store out of date
+# for our purposes I think it's okay because those utils should be stable, BUT for your edification,
+# if there's any upstream things that you REALLY want tracked,
+# best to re-declare them using tar_target() again
 weights_flynet <- tar_read(weights_flynet, store = here::here("ignore", "_targets", "subjective"))
 
 targets_stimuli <- list(
@@ -87,19 +93,6 @@ targets_stimuli <- list(
                                     "stimulus",
                                     "retinotopic_mapping",
                                     "videos"),
-                         full.names = TRUE),
-    format = "file"
-  ),
-  tar_target(
-    name = videos_studyforrest_mov,
-    # NOTE 2024-05-13!!! 
-    # Original analyses were run using mp4 conversions of these original mkv videos
-    # which are saved elsewhere
-    # The flow extracted from the mkvs is EVER SO SLIGHTLY different (like seriously, correlation > .998)
-    # so double check that all the results replicate with the new weights before you ship this to production
-    command = list.files(here::here("ignore", 
-                                    "stimuli",
-                                    "studyforrest_retinotopy"),
                          full.names = TRUE),
     format = "file"
   )
@@ -135,15 +128,6 @@ targets_flynet_activations <- list(
   tar_target(
     name = flynet_activations_raw_studyforrest,
     command = {
-      # THE OLD FILES, from mov and not made with the python function
-      # TODO: Delete this once the updated pipeline werqs
-      list.files(here::here("ignore",
-                            "outputs",
-                            "flynet_activations",
-                            "132x132_stride8",
-                            "studyforrest_retinotopy"),
-                 full.names = TRUE)
-      
       video_paths <- paste(videos_studyforrest, collapse = " ")
       out_path <- here::here("ignore",
                              "outputs",
@@ -387,7 +371,7 @@ targets_fmri_data <- list(
             bold_realign.norm_sub.03,
             bold_realign.norm_sub.04, 
             bold_realign.norm_sub.05, 
-            bold_realign.norm_sub.06,
+            # skip subject 6--they had weird normalization? missing data in the V1 mask
             bold_realign.norm_sub.09, 
             bold_realign.norm_sub.10, 
             bold_realign.norm_sub.14,
@@ -943,7 +927,7 @@ targets_metrics <- list(
         # JUST IN CASE we might ever compare data between ROIs by subject
         # I think we never will because the noise ceilings are so different but just in case!
         # bc in the raw fMRI data coming in, subject 6 with the skunked voxels is just missing now
-        mutate(subj_num = if_else(subj_num >= 6, subj_num + 1, subj_num))
+        mutate(subj_num = if_else(subj_num >= 6, subj_num + 1L, subj_num))
       
       bind_rows(SC = sc,
                 V1 = v1,
@@ -989,6 +973,20 @@ targets_perms <- list(
                  preds_by.run.type = pls_pred.only_combined_sc_studyforrest_by.run.type,
                  metrics_by.run.type =  metrics_formula_sc_studyforrest_by.run.type %>% 
                    filter(parameter == "combined")),
+    permuted_trs_studyforrest
+  ),
+  # this set of perms keeps voxel num and only gets used to produce a statmap later
+  # so it's not run on all the conditions so we can save time
+  tar_rep2(
+    name = perms_ring.expand_sc_studyforrest,
+    command = pls_pred.only_flynet_sc_studyforrest_by.run.type %>% 
+        rename(run_type = this_run_type) %>% 
+        filter(run_type == "ring_expand") %>% 
+        wrap_pred_metrics(permute_order = permuted_trs_studyforrest$permuted_trs,
+                          decoding = FALSE) %>% 
+        select(-preds) %>% 
+        bind_perm_to_real(filter(metrics_flynet_sc_studyforrest_by.run.type, run_type == "ring_expand"), 
+                          summarize_voxels = FALSE),
     permuted_trs_studyforrest
   ),
   tar_rep2(
@@ -1351,23 +1349,17 @@ targets_niftis <- list(
   tar_target(
     name = statmap_r_flynet_sc_ring.expand,
     command = {
-      voxel_perms <- perms_flynet_sc_studyforrest %>% 
-        select(tar_batch, tar_rep, by.run.type) %>% 
-        unnest(by.run.type) %>% 
-        select(-test_subjs) %>% 
-        unnest(perf) %>% 
-        filter(stim_type == "ring_expand") %>%
+      voxel_values <- perms_ring.expand_sc_studyforrest %>% 
         group_by(tar_batch, tar_rep, voxel_num) %>%
-        summarize(r_model_perm = mean(r_model),
-                  .groups = "drop")
-      
-      voxel_values <- metrics_flynet_sc_studyforrest_by.run.type %>% 
-        filter(run_type == "ring_expand") %>% 
-        preplot_voxels_model_r(voxel_coords = voxel.coords_sc) %>% 
-        right_join(voxel_perms, by = "voxel_num") %>% 
+        summarize(r.model_real = mean(r.model_real),
+                  r.model_perm = mean(r.model_perm),
+                  .groups = "drop") %>% 
+        left_join(voxel.coords_sc, by = "voxel_num") %>% 
         group_by(voxel_num, x, y, z, side) %>% 
-        summarize(pval = (sum(r_model_perm > r_model)+1)/(n()+1), 
-                  r_model = mean(r_model),
+        # fdr_correct expects a column called pval
+        # write_statmap_nifti expects a column called r_model
+        summarize(pval = (sum(r.model_perm > r.model_real)+1)/(n()+1), 
+                  r_model = mean(r.model_real),
                   .groups = "drop") %>% 
         fdr_correct() %>% 
         filter(pval < q_cutoff)
