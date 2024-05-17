@@ -1,0 +1,515 @@
+---
+title: "Stats for looming secondary analyses manuscript"
+author: "Monica Thieu"
+format: html
+---
+
+```{r}
+#| label: setup
+
+library(targets)
+library(tidyverse)
+library(magrittr)
+
+store_retinotopy <- here::here("ignore", "_targets", "retinotopy")
+store_eyeblink <- here::here("ignore", "_targets", "eyeblink")
+store_subjective <- here::here("ignore", "_targets", "subjective")
+
+get_perm_pval <- function (x_perm, x_real, upper_tail = TRUE) {
+  if (upper_tail) compared <- x_perm > x_real else compared <- x_perm < x_real
+  (sum(compared)+1) / (length(compared)+1)
+}
+```
+
+## Part 1: fMRI
+
+As of the revision, it's become easier to pull the perm iterations target and direct-calculate whatever comparisons I need in here
+
+```{r}
+perms_sc <- tar_read(perms_flynet_sc_studyforrest,
+                     store = store_retinotopy)
+
+perms_retinotopy <- bind_rows(SC = perms_sc,
+                              V1 = tar_read(perms_flynet_v1_studyforrest,
+                                            store = store_retinotopy),
+                              .id = "roi") %>% 
+  select(-tar_seed)
+
+# mf noise ceilings
+noise.ceiling_retinotopy <- bind_rows(SC = tar_read(metrics_flynet_sc_studyforrest_by.run.type, 
+                                                    store = store_retinotopy),
+                                      V1 = tar_read(metrics_flynet_v1_studyforrest_by.run.type, 
+                                                    store = store_retinotopy),
+                                      .id = "roi") %>% 
+  select(roi, perf) %>% 
+  unnest(perf) %>% 
+  group_by(roi, stim_type) %>% 
+  summarize(noise_ceiling = mean(r_groupavg, na.rm = TRUE)) %>% 
+  filter(noise_ceiling == max(noise_ceiling)) %>% 
+  ungroup() %>% 
+  select(-stim_type)
+```
+
+A visualization for our personal edification
+
+```{r}
+perms_retinotopy %>% 
+  select(-contains("perm"), -starts_with("tar_")) %>% 
+  distinct() %>% 
+  pivot_longer(cols = starts_with("r.model"), 
+               names_to = "fit_type", 
+               values_to = "r.model", 
+               names_prefix = "r.model_real_") %>% 
+  mutate(parameter = fct_relevel(parameter, "flynet", "tau_inv", "eta", "combined", "flynet.tau_inv", "flynet.eta", "flynet.combined")) %>% 
+  ggplot(aes(x = parameter,
+             y = r.model,
+             fill = fct_rev(fit_type))) +
+  geom_boxplot() +
+  geom_hline(yintercept = 0, linetype = "dotted") +
+  facet_grid(roi ~ stim_type) +
+  guides(x = guide_axis(angle = 30))
+```
+
+FlyNet expansion-specific > 0
+
+```{r}
+perms_retinotopy %>% 
+  filter(stim_type == "ring_expand") %>% 
+  group_by(roi, tar_batch, tar_rep) %>% 
+  summarize(across(ends_with("by.run.type"), 
+                   list(mean = mean, se = \(x) sd(x)/sqrt(length(x))),
+                   .names = "{.fn}_{.col}")) %>%
+  group_by(roi) %>% 
+  summarize(r.model = unique(mean_r.model_real_by.run.type),
+            se = unique(se_r.model_real_by.run.type),
+            pval = get_perm_pval(mean_r.model_perm_by.run.type,
+                                 mean_r.model_real_by.run.type)) %>% 
+  left_join(noise.ceiling_retinotopy, by = "roi") %>% 
+  mutate(pct.ceiling = r.model / noise_ceiling)
+```
+FlyNet expansion-specific > FlyNet general (predicted on expansion)
+
+```{r}
+perms_retinotopy %>% 
+  filter(stim_type == "ring_expand") %>% 
+  mutate(diff_perm = r.model_perm_by.run.type - r.model_perm_overall,
+         diff_real = r.model_real_by.run.type - r.model_real_overall) %>% 
+  group_by(roi, tar_batch, tar_rep) %>% 
+  summarize(across(c(starts_with("diff"), r.model_real_overall),
+                   list(mean = mean, se = \(x) sd(x)/sqrt(length(x))),
+                   .names = "{.fn}_{.col}")) %>%
+  group_by(roi) %>% 
+  summarize(r.diff = unique(mean_diff_real),
+            se.diff = unique(se_diff_real),
+            pct.diff = unique(mean_diff_real) / unique(mean_r.model_real_overall),
+            pct.denom = unique(mean_r.model_real_overall),
+            pval = get_perm_pval(mean_diff_perm,
+                                 mean_diff_real))
+```
+
+Average of FlyNet contraction, wedge counter, wedge clock-specific > FlyNet general (predicted on respective)
+
+```{r}
+perms_retinotopy %>% 
+  mutate(is_expand = if_else(stim_type == "ring_expand", "expand", "other"),
+         diff_perm = r.model_perm_by.run.type - r.model_perm_overall,
+         diff_real = r.model_real_by.run.type - r.model_real_overall) %>% 
+  rename(r_real_overall = r.model_real_overall) %>% 
+  # average across the 3 non-expansion conditions
+  group_by(roi, is_expand, tar_batch, tar_rep, subj_num) %>% 
+  summarize(across(c(starts_with("diff"), r_real_overall), mean), .groups = "drop") %>%
+  pivot_wider(names_from = is_expand,
+              values_from = c(starts_with("diff_"), r_real_overall)) %>% 
+  mutate(diff2_perm = diff_perm_expand - diff_perm_other,
+         diff2_real = diff_real_expand - diff_real_other) %>% 
+  group_by(roi, tar_batch, tar_rep) %>% 
+  summarize(across(c(starts_with("diff"), starts_with("r_real_overall")),
+                   list(mean = mean, se = \(x) sd(x)/sqrt(length(x))),
+                   .names = "{.fn}_{.col}")) %>% 
+  group_by(roi) %>% 
+  summarize(r.diff_expand = unique(mean_diff_real_expand),
+            se.diff_expand = unique(se_diff_real_expand),
+            r.diff_not.expand = unique(mean_diff_real_other),
+            se.diff_not.expand = unique(se_diff_real_other),
+            r.diff2 = unique(mean_diff2_real),
+            se.diff2 = unique(se_diff2_real),
+            pct.diff2 = unique(mean_diff2_real) / mean(c(unique(mean_r_real_overall_expand), unique(mean_r_real_overall_other))),
+            pval_not.expand_below0 = get_perm_pval(mean_diff_perm_other,
+                                        mean_diff_real_other,
+                                        # BE CAREFUL!!! This is going to apply the same p-val tail to BOTH.
+                                        # upper_tail = FALSE is signed to get p-values on the difference being NEGATIVE
+                                        upper_tail = FALSE),
+            pval_not.expand_above0 = get_perm_pval(mean_diff_perm_other,
+                                        mean_diff_real_other),
+            pval_diff2 = get_perm_pval(mean_diff2_perm,
+                                        mean_diff2_real))
+```
+
+Like above but for stupid 3-way interaction diff
+
+```{r}
+perms_retinotopy %>% 
+  mutate(is_expand = if_else(stim_type == "ring_expand", "expand", "other"),
+         diff_perm = r.model_perm_by.run.type - r.model_perm_overall,
+         diff_real = r.model_real_by.run.type - r.model_real_overall) %>% 
+  rename(r_real_overall = r.model_real_overall) %>% 
+  # average across the 3 non-expansion conditions
+  group_by(roi, is_expand, tar_batch, tar_rep, subj_num) %>% 
+  summarize(across(starts_with("diff"), mean), .groups = "drop") %>%
+  pivot_wider(names_from = is_expand,
+              values_from = starts_with("diff_")) %>% 
+  left_join(noise.ceiling_retinotopy, by = "roi") %>% 
+  mutate(diff2_perm = diff_perm_expand - diff_perm_other,
+         diff2_real = diff_real_expand - diff_real_other,
+         diff2_adj_real = diff2_real / noise_ceiling,
+         diff2_adj_perm = diff2_perm / noise_ceiling) %>% 
+  select(-noise_ceiling) %>% 
+  pivot_wider(names_from = roi,
+              values_from = starts_with("diff")) %>%
+  mutate(diff3_real = diff2_real_SC - diff2_real_V1,
+         diff3_adj_real = diff2_adj_real_SC - diff2_adj_real_V1,
+         diff3_perm = diff2_perm_SC - diff2_perm_V1,
+         diff3_adj_perm = diff2_adj_perm_SC - diff2_adj_perm_V1) %>% 
+  group_by(tar_batch, tar_rep) %>% 
+  summarize(across(starts_with("diff3"),
+                   list(mean = \(x) mean(x, na.rm = TRUE), se = \(x) sd(x, na.rm = TRUE)/sqrt(length(x))),
+                   .names = "{.fn}_{.col}"),
+            .groups = "drop") %>% 
+  summarize(across(c(contains("diff3_real"), contains("diff3_adj_real")), unique),
+            pval_diff3 = get_perm_pval(mean_diff3_perm,
+                                       mean_diff3_real),
+            pval_diff3_adj = get_perm_pval(mean_diff3_adj_perm,
+                                           mean_diff3_adj_real))
+```
+
+Optical variables only, expansion-specific > 0
+
+```{r}
+perms_sc %>% 
+  filter(parameter %in% c("tau_inv", "eta", "combined"),
+         stim_type == "ring_expand") %>% 
+  group_by(parameter, tar_batch, tar_rep) %>% 
+  summarize(across(ends_with("by.run.type"),
+                   list(mean = mean, se = \(x) sd(x)/sqrt(length(x))),
+                   .names = "{.fn}_{.col}")) %>%
+  group_by(parameter) %>% 
+  summarize(r.model = unique(mean_r.model_real_by.run.type),
+            se.model = unique(se_r.model_real_by.run.type),
+            pval = get_perm_pval(mean_r.model_perm_by.run.type,
+                                 mean_r.model_real_by.run.type))
+```
+
+Optical variables expansion-specific > general (predicted on expansion)
+
+```{r}
+perms_sc %>% 
+  filter(parameter %in% c("tau_inv", "eta", "combined"),
+         stim_type == "ring_expand") %>% 
+  group_by(parameter, tar_batch, tar_rep) %>% 
+  summarize(across(starts_with("r.model"), mean)) %>%
+  group_by(parameter) %>% 
+  mutate(diff_perm = r.model_perm_by.run.type - r.model_perm_overall,
+         diff_real = r.model_real_by.run.type - r.model_real_overall) %>% 
+  summarize(r.diff = mean(diff_real),
+            pval = get_perm_pval(diff_perm,
+                                 diff_real))
+```
+
+FlyNet expansion-specific > optical variables expansion-specific
+
+```{r}
+perms_sc %>% 
+  filter(parameter %in% c("flynet", "combined"),
+         stim_type == "ring_expand") %>% 
+  select(-ends_with("overall")) %>% 
+  rename(r_perm = r.model_perm_by.run.type,
+         r_real = r.model_real_by.run.type) %>% 
+  pivot_wider(names_from = parameter,
+              values_from = starts_with("r_")) %>% 
+  mutate(diff_perm = r_perm_flynet - r_perm_combined,
+         diff_real = r_real_flynet - r_real_combined) %>% 
+  group_by(tar_batch, tar_rep) %>% 
+  summarize(across(starts_with("diff"),
+                   list(mean = mean, se = \(x) sd(x)/sqrt(length(x))),
+                   .names = "{.fn}_{.col}"),
+            .groups = "drop") %>% 
+  summarize(r.diff = unique(mean_diff_real),
+            se.diff = unique(se_diff_real),
+            pval = get_perm_pval(mean_diff_perm,
+                                 mean_diff_real))
+```
+
+FlyNet + optical variables expansion-specific > FlyNet expansion-specific
+
+```{r}
+perms_sc %>% 
+  bind_rows(flynet = .,
+            flynet.combined = tar_read(perms_combined_sc_studyforrest,
+                                            store = store_retinotopy),
+            .id = "parameter") %>% 
+  filter(stim_type == "ring_expand") %>% 
+  select(-ends_with("overall"), -tar_seed) %>% 
+  rename(r_perm = r.model_perm_by.run.type,
+         r_real = r.model_real_by.run.type) %>% 
+  pivot_wider(names_from = parameter,
+              values_from = starts_with("r_")) %>% 
+  mutate(diff_perm = r_perm_flynet.combined - r_perm_flynet,
+         diff_real = r_real_flynet.combined - r_real_flynet) %>% 
+  group_by(tar_batch, tar_rep) %>% 
+  summarize(across(c(starts_with("diff"), r_real_flynet),
+                   list(mean = mean, se = \(x) sd(x)/sqrt(length(x))),
+                   .names = "{.fn}_{.col}"),
+            .groups = "drop") %>% 
+  summarize(r.diff = unique(mean_diff_real),
+            se.diff = unique(se_diff_real),
+            pct.diff = unique(mean_diff_real) / unique(mean_r_real_flynet),
+            pval = get_perm_pval(mean_diff_perm,
+                                 mean_diff_real))
+```
+
+## Part 2: Baby eyeblinks
+
+```{r}
+model_blink.by.hit_flynet <- targets::tar_read(model_blink.by.hit_flynet,
+                                               store = store_eyeblink)
+perms_blink.by.hit_flynet <- targets::tar_read(perms_blink.by.hit_flynet,
+                                               store = store_eyeblink)
+model_blink.by.hit_combined <- targets::tar_read(model_blink.by.hit_combined,
+                                               store = store_eyeblink)
+perms_blink.by.hit_combined <- targets::tar_read(perms_blink.by.hit_combined,
+                                               store = store_eyeblink)
+```
+
+```{r}
+blink.by.hit_metrics <- list(flynet = targets::tar_read(model_blink.by.hit_flynet,
+                                                        store = store_eyeblink),
+                             tauinv = targets::tar_read(model_blink.by.hit_only.tau.inv,
+                                                               store = store_eyeblink),
+                             eta = targets::tar_read(model_blink.by.hit_only.eta,
+                                                            store = store_eyeblink),
+                             flynet.tauinv = targets::tar_read(model_blink.by.hit_tau.inv,
+                                                               store = store_eyeblink),
+                             flynet.eta = targets::tar_read(model_blink.by.hit_eta,
+                                                            store = store_eyeblink),
+                             combined = targets::tar_read(model_blink.by.hit_combined,
+                                                          store = store_eyeblink)) %>% 
+  map(broom::glance) %>% 
+  bind_rows(.id = "model_type") %>% 
+  arrange(AIC)
+
+blink.by.hit_metrics
+```
+
+```{r}
+targets::tar_read(perms_blink.by.hit_flynet, store = store_eyeblink) %>% 
+  left_join(targets::tar_read(model_blink.by.hit_flynet,
+                              store = store_eyeblink) %>% 
+              broom::tidy() %>% 
+              select(term, estimate_true = estimate, std.error_true = std.error),
+            by = "term") %>% 
+  group_by(term) %>% 
+  summarize(estimate = unique(estimate_true), 
+            se = unique(std.error_true),
+            pval = (sum(estimate > estimate_true) + 1)/(n() + 1)) %>% 
+  mutate(across(where(is.numeric), \(x) signif(x, digits = 3)))
+```
+
+```{r}
+targets::tar_read(perms_blink.by.hit_only.tau.inv, store = store_eyeblink) %>% 
+  left_join(targets::tar_read(model_blink.by.hit_only.tau.inv,
+                              store = store_eyeblink) %>% 
+              broom::tidy() %>% 
+              select(term, estimate_true = estimate, std.error_true = std.error),
+            by = "term") %>% 
+  group_by(term) %>% 
+  summarize(estimate = unique(estimate_true), 
+            se = unique(std.error_true),
+            pval = (sum(estimate > estimate_true) + 1)/(n() + 1)) %>% 
+  mutate(across(where(is.numeric), \(x) signif(x, digits = 3)))
+```
+
+```{r}
+targets::tar_read(perms_blink.by.hit_only.eta, store = store_eyeblink) %>% 
+  left_join(targets::tar_read(model_blink.by.hit_only.eta,
+                              store = store_eyeblink) %>% 
+              broom::tidy() %>% 
+              select(term, estimate_true = estimate, std.error_true = std.error),
+            by = "term") %>% 
+  group_by(term) %>% 
+  summarize(estimate = unique(estimate_true), 
+            se = unique(std.error_true),
+            pval = (sum(estimate > estimate_true) + 1)/(n() + 1)) %>% 
+  mutate(across(where(is.numeric), \(x) signif(x, digits = 3)))
+```
+
+```{r}
+targets::tar_read(perms_blink.by.hit_combined, store = store_eyeblink) %>% 
+  left_join(targets::tar_read(model_blink.by.hit_combined,
+                              store = store_eyeblink) %>% 
+              broom::tidy() %>% 
+              select(term, estimate_true = estimate, std.error_true = std.error),
+            by = "term") %>% 
+  group_by(term) %>% 
+  summarize(estimate = unique(estimate_true), 
+            se = unique(std.error_true),
+            pval = (sum(estimate > estimate_true) + 1)/(n() + 1)) %>% 
+  mutate(across(where(is.numeric), \(x) signif(x, digits = 3)))
+```
+
+```{r}
+blink.by.hit_metrics %>% 
+  filter(model_type %in% c("combined", "flynet")) %>% 
+  summarize(diff_aic = diff(AIC))
+```
+
+
+```{r}
+tar_read(perm.pvals_auc_overall, store = store_eyeblink)
+```
+```{r}
+tar_read(boots_auc_overall, store = store_eyeblink) %>% 
+  summarize(across(.estimate, list(mean = mean, sd = sd))) %>% 
+  mutate(across(where(is.numeric), \(x) signif(x, digits = 3)))
+```
+```{r}
+tar_read(perm.pvals_auc_ttc, store = store_eyeblink) %>% 
+  mutate(across(where(is.numeric), \(x) signif(x, digits = 3)))
+```
+
+
+## Part 3: Subjective experience
+
+```{r}
+preds_flynet_ckvids <- tar_read(preds_flynet_ckvids, store = store_subjective)
+preds.videowise_emonet_ckvids <- tar_read(preds.videowise_emonet_ckvids, store = store_subjective)
+```
+
+
+Phil looming to emotion ratings:
+
+```{r}
+ratings_ckvids <- tar_read(ratings_ck2017, store = store_subjective) %>% 
+  read_csv() %>% 
+  select(video = Filename, arousal = arousal...39, valence, fear = Fear, looming = Looming)
+
+
+```
+
+
+Numbers of videos:
+
+```{r}
+tar_read(rsplit_flynet_ckvids, store = store_subjective)
+```
+
+FlyNet predicting Phil-coded looming performance
+
+```{r}
+preds_looming.flynet_ckvids <- tar_read(preds_looming.flynet_ckvids, store = store_subjective)
+
+perf_looming.flynet_ckvids <- preds_looming.flynet_ckvids %>% 
+  yardstick::roc_auc(truth = looming_obs, .pred_yes)
+
+perf_looming.flynet_ckvids
+```
+
+```{r}
+tar_read(boots_looming.flynet_ckvids, store = store_subjective) %>% 
+  estimate_tune_results()
+```
+
+```{r}
+tar_read(perms_looming.flynet_ckvids, store = store_subjective) %>% 
+  unnest(.metrics) %>% 
+  filter(.metric == "roc_auc") %>% 
+  mutate(.estimate_real = perf_looming.flynet_ckvids$.estimate) %>% 
+  summarize(perm_pval = get_perm_pval(.estimate, .estimate_real))
+```
+
+
+FlyNet performance
+
+```{r}
+tar_read(perms_bothnets_ckvids, store = store_subjective) %>% 
+  rename_with(\(x) str_remove(x, ".metrics_"), everything()) %>% 
+  unnest(c(flynet, emonet), names_sep = "") %>% 
+  filter(flynet.metric == "accuracy") %>% 
+  summarize(across(ends_with(".estimate"), list(mean = mean,
+                                                q025 = \(x) quantile(x, .025),
+                                                q975 = \(x) quantile(x, .975)))) %>% 
+  mutate(across(where(is.numeric), \(x) signif(x, digits = 3)))
+```
+
+```{r}
+tar_read(perm.pvals_model.acc_ckvids, store = store_subjective) %>% 
+  filter(.metric %in% c("accuracy", "roc_auc")) %>% 
+  mutate(accuracy = signif(accuracy, digits = 3))
+```
+
+```{r}
+tar_read(boots_bothnets_ckvids, store = store_subjective) %>% 
+  select(-tar_seed) %>% 
+  unnest(c(.metrics_flynet, .metrics_emonet), names_sep = "") %>% 
+  rename_with(\(x) str_remove(x, ".metrics_"), everything()) %>% 
+  group_by(flynet.metric) %>% 
+  summarize(across(c(flynet.estimate, emonet.estimate),
+                   list(mean = mean, sd = sd))) %>% 
+  mutate(across(where(is.numeric), \(x) signif(x, digits = 3))) %>% 
+  knitr::kable()
+```
+
+
+```{r}
+# 2023-08-07 I took this out of the manuscript
+tar_read(perm.pvals_cor.pred_ckvids, store = store_subjective) %>% 
+  mutate(correlation = signif(correlation, digits = 3))
+```
+```{r}
+bind_rows(flynet = preds_flynet_ckvids, 
+          emonet = preds.videowise_emonet_ckvids, 
+          .id = "model_type") %>% 
+  pivot_longer(cols = starts_with(".pred"), 
+               names_to = "this_emotion", 
+               values_to = "classifier_prob", 
+               names_prefix = ".pred_") %>% 
+  nest(probs = -c(model_type, this_emotion)) %>% 
+  mutate(probs = map2(probs, this_emotion, 
+                      \(x1, x2) mutate(x1, 
+                                       across(c(emotion_obs, emotion_pred), 
+                                              \(y) fct_collapse(y, this_emotion = x2, other_level = "other")
+                                       )
+                      )
+  )
+  ) %>% 
+  unnest(probs) %>% 
+  group_by(model_type, this_emotion) %>% 
+  roc_auc(truth = emotion_obs, classifier_prob) %>% 
+  select(-.metric, -.estimator) %>% 
+  group_by(model_type) %>% 
+  mutate(auc_rank = dense_rank(desc(.estimate)),
+         .estimate = signif(.estimate, digits = 3)) %>% 
+  filter(this_emotion %in% c("Fear", "Surprise", "Craving", "Sexual Desire"))
+```
+
+```{r}
+tar_read(boots_auc.by.category_bothnets_ckvids, store = store_subjective) %>% 
+  unnest(.metrics) %>% 
+  group_by(model_type, this_emotion) %>% 
+  summarize(mean = mean(.estimate, na.rm = T),
+            sd = sd(.estimate, na.rm = T),
+            .groups = "drop") %>% 
+  mutate(across(where(is.numeric), \(x) signif(x, digits = 3))) %>% 
+  pivot_wider(names_from = model_type, values_from = c(mean, sd)) %>% 
+  knitr::kable()
+```
+
+```{r}
+tar_read(perm.pvals_auc.by.category_bothnets_ckvids, store = store_subjective) %>% 
+  mutate(across(where(is.numeric), \(x) signif(x, digits = 3)))
+```
+
+```{r}
+tar_read(perm.pvals_partial.r2_bothnets_ckvids, store = store_subjective) %>% 
+  mutate(partial.r.abs = sqrt(partial.r2),
+         across(c(partial.r.abs, pval), \(x) signif(x, digits = 3)))
+```
