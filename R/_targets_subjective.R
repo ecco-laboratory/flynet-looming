@@ -888,7 +888,7 @@ target_confusions_ckvids <- tar_target(
 target_mds.coords_ckvids <- tar_target(
   name = mds.coords_ckvids,
   command = {
-    rating_means <- read_csv(ratings_ck2017) %>% 
+    rating_means <- ratings_ck2017 %>% 
       select(video, arousal, valence) %>% 
       # Keep only the TRAINING videos
       # so this has the effect of "fitting" a "model" on the training videos
