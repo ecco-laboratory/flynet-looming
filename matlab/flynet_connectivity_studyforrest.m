@@ -37,8 +37,9 @@ cycle_length = run_length/n_cycles;
 
 %% read in whole-brain fmri data
 
+n_valid_subs = length(all_files);
 % use the cell array of cell arrays to valid preprocessed BOLD paths compiled by R targets
-for s=1:length(all_files)
+for s=1:n_valid_subs
     files = all_files{s};
 
     for f=1:length(files) % for each of the stimulus runs
@@ -109,6 +110,8 @@ mean_vox_corr_wb_diff(isnan(mean_vox_corr_wb_diff)) = 0;
 
 %% permutation testing apparently
 n_permutations = 5000;
+% actually preallocate the array bc it's serious this time
+n_vox_wb_dist = zeros(n_permutations, size(vox_corr_wb_diff, 2));
 tic;
 for it = 1:n_permutations
     time_elapsed = seconds(toc);
@@ -128,6 +131,7 @@ for it = 1:n_permutations
     flipper(flipper==2)=-1;
 
     % actually shuffle the data
+    flipped_vox_corr_wb_diff = zeros(size(vox_corr_wb_diff));
     for v=1:size(vox_corr_wb_diff,2)
         flipped_vox_corr_wb_diff(:,v)=vox_corr_wb_diff(:,v).*flipper';
     end
@@ -136,6 +140,7 @@ for it = 1:n_permutations
     n_vox_wb_dist(it, :) = mean(flipped_vox_corr_wb_diff, "omitnan");
 end
 
+phat_vox_wb = zeros(1,v);
 for v=1:size(mean_vox_corr_wb_diff, 2)
     phat_vox_wb(v) = 1-(sum(abs(mean_vox_corr_wb_diff(v))>abs(n_vox_wb_dist(:,v))))/(n_permutations+1);
 end
