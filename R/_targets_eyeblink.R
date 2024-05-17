@@ -71,7 +71,6 @@ targets_raw_data <- list(
   tar_target(
     name = blink.counts_ayzenberg2015_raw,
     command = {
-      
       osf_retrieve_node(osf_project_id) %>% 
         osf_ls_files() %>% 
         filter(name == "eyeblink") %>% 
@@ -147,7 +146,6 @@ targets_python <- list(
   tar_target(
     name = py_make_looming_video,
     command = here::here("python",
-                         "myutils",
                          "make_looming_video.py"),
     format = "file"
   )
@@ -158,9 +156,7 @@ targets_python <- list(
 targets_stimuli <- list(
   tar_target(
     name = images_ayzenberg2015,
-    # TODO: Point this to where OSF will download to
     command = {
-      
       osf_retrieve_node(osf_project_id) %>% 
         osf_ls_files() %>% 
         filter(name == "eyeblink") %>% 
