@@ -13,10 +13,13 @@ library(future.callr)
 library(future.batchtools)
 library(tibble)
 library(rlang)
+library(osfr)
 
 # Set target options:
 tar_option_set(
-  packages = c("mixOmics",
+  packages = c("osfr",
+               "withr",
+               "mixOmics",
                "tidymodels",
                "plsmod",
                "discrim",
@@ -60,185 +63,388 @@ tar_source(c("R/model_flynet_affect.R",
              "R/plot_helpers.R"
 ))
 
-# source("other_functions.R") # Source other scripts as needed. # nolint
+
+osf_project_id <- "as4vm"
+osf_local_download_path <- here::here("ignore", "datasets", "subjective")
+dir.create(osf_local_download_path, showWarnings = FALSE)
+osf_folder <- osf_retrieve_node(osf_project_id) %>% 
+    osf_ls_files() %>% 
+    dplyr::filter(name == "subjective") %>% 
+    osf_ls_files()
 
 ## metadata files from other people's stuff ----
 
-target_ratings_ck2017 <- tar_target(
-  name = ratings_ck2017,
-  command = "/home/mthieu/Repos/CowenKeltner/metadata/video_ratings_with_looming.csv",
-  format = "file"
+targets_ratings <- list(
+  tar_target(
+    name = ratings_ck2017_raw,
+    command = read_csv("https://s3-us-west-1.amazonaws.com/emogifs/CowenKeltnerEmotionalVideos.csv")
+  ),
+  tar_target(
+    name = censored_ck2017,
+    command = {
+      download_path <- file.path(osf_local_download_path, "metadata")
+      dir.create(download_path, showWarnings = FALSE)
+      file_name <- "cowen2017_censored_video_ids.csv"
+      
+      osf_folder %>% 
+        filter(name == "metadata") %>% 
+        osf_ls_files() %>% 
+        filter(name == file_name) %>% 
+        osf_download(path = download_path,
+                     conflicts = "overwrite")
+      
+      file.path(download_path, file_name)
+      },
+    format = "file"
+  ),
+  tar_target(
+    name = ratings.loom_ck2017,
+    command = {
+      download_path <- file.path(osf_local_download_path, "rawdata")
+      dir.create(download_path, showWarnings = FALSE)
+      file_name <- "loom_ratings.csv"
+      
+      osf_folder %>% 
+        filter(name == "rawdata") %>% 
+        osf_ls_files() %>% 
+        filter(name == file_name) %>% 
+        osf_download(path = download_path,
+                     conflicts = "overwrite")
+      
+      file.path(download_path, file_name)
+    },
+    format = "file"
+  ),
+  tar_target(
+    name = ratings_ck2017,
+    command = ratings_ck2017_raw %>% 
+      full_join(read_csv(ratings.loom_ck2017),
+                by = "Filename") %>% 
+      rename(video = "Filename",
+             looming = Looming,
+             arousal = arousal...37)
+  ),
+  tar_target(
+    name = ids.train_kragel2019,
+    command = {
+      download_path <- file.path(osf_local_download_path, "metadata")
+      dir.create(download_path, showWarnings = FALSE)
+      file_name <- "kragel2019_train_video_10fps_ids.csv"
+      
+      osf_folder %>% 
+        filter(name == "metadata") %>% 
+        osf_ls_files() %>% 
+        filter(name == file_name) %>% 
+        osf_download(path = download_path,
+                     conflicts = "overwrite")
+      
+      file.path(download_path, file_name)
+    },
+    format = "file"
+  ),
+  tar_target(
+    name = ids.test_kragel2019,
+    command = {
+      download_path <- file.path(osf_local_download_path, "metadata")
+      dir.create(download_path, showWarnings = FALSE)
+      file_name <- "kragel2019_test_video_10fps_ids.csv"
+      
+      osf_folder %>% 
+        filter(name == "metadata") %>% 
+        osf_ls_files() %>% 
+        filter(name == file_name) %>% 
+        osf_download(path = download_path,
+                     conflicts = "overwrite")
+      
+      file.path(download_path, file_name)
+    },
+    format = "file"
+  ),
+  tar_target(
+    name = classes_ck2017,
+    command = {
+      censored <- read_csv(censored_ck2017)
+      bind_rows(train = read_csv(ids.train_kragel2019),
+                test = read_csv(ids.test_kragel2019),
+                .id = "split") %>% 
+        filter(!(emotion %in% c("Pride",
+                                "Satisfaction",
+                                "Sympathy",
+                                "Anger",
+                                "Admiration",
+                                "Calmness",
+                                "Relief",
+                                "Awkwardness",
+                                "Triumph",
+                                "Nostalgia"))) %>% 
+        mutate(censored = video %in% c(censored$less.bad, censored$very.bad))
+    }
+  ),
+  tar_target(
+    name = classes_ck2017_csv,
+    command = {
+      out_path <- here::here("ignore",
+                             "datasets",
+                             "subjective",
+                             "metadata",
+                             "kragel2019_all_video_10fps_ids.csv")
+      write_csv(classes_ck2017, file = out_path)
+      
+      out_path
+      },
+    format = "file"
+  )
 )
 
-target_censored_ck2017 <- tar_target(
-  name = censored_ck2017,
-  command = "/home/mthieu/Repos/CowenKeltner/metadata/censored_video_ids.csv",
-  format = "file"
-)
+## stimuli!! ----
 
-target_ids.train_kragel2019 <- tar_target(
-  name = ids.train_kragel2019,
-  command = "/home/mthieu/Repos/CowenKeltner/metadata/train_video_ids.csv",
-  format = "file"
-)
+stimuli_path <- here::here("ignore",
+                           "datasets",
+                           "subjective",
+                           "stimuli")
 
-target_ids.test_kragel2019 <- tar_target(
-  name = ids.test_kragel2019,
-  command = "/home/mthieu/Repos/CowenKeltner/metadata/test_video_ids.csv",
-  format = "file"
-)
-
-target_classes_ck2017 <- tar_target(
-  name = classes_ck2017,
-  command = {
-    censored <- read_csv(censored_ck2017)
-    bind_rows(train = read_csv(ids.train_kragel2019),
-              test = read_csv(ids.test_kragel2019),
-              .id = "split") %>% 
-      filter(!(emotion %in% c("Pride",
-                              "Satisfaction",
-                              "Sympathy",
-                              "Anger",
-                              "Admiration",
-                              "Calmness",
-                              "Relief",
-                              "Awkwardness",
-                              "Triumph",
-                              "Nostalgia"))) %>% 
-      mutate(censored = video %in% c(censored$less.bad, censored$very.bad))
-  }
-)
-
-target_weights_zhou2022 <- tar_map(
-  values = tibble(filename = list.files(here::here("ignore",
-                                                   "models",
-                                                   "zhou2022"))),
-  tar_target(name = weights_zhou2022,
-             command = here::here("ignore",
-                                  "models",
-                                  "zhou2022",
-                                  filename),
-             format = "file")
+targets_stimuli <- list(
+  tar_target(
+    name = videos_cowen2017_raw,
+    # NOTE TO USER!
+    # You MUST make sure the videos you download _manually_ from Alan's form
+    # end up at this path.
+    # I don't feel comfortable pulling these from his AWS hosting
+    # So this part is up to you, sadly
+    command = list.files(file.path(stimuli_path, "raw"),
+                         full.names = TRUE),
+    format = "file"
+  ),
+  tar_target(
+    name = videos_cowen2017_10fps,
+    command = {
+      videos_cowen2017_raw
+      
+      out_path <- file.path(stimuli_path, "fps10")
+      dir.create(out_path,
+                 showWarnings = FALSE)
+      
+      # manually adding env/bin to the shell search path with which this command will be called
+      # is the caveman version of running this code using the local conda env
+      # have to use the conda env to access the local install of ffmpeg
+      with_path(here::here("env", "bin"),
+                code = system2("python",
+                               args = c(py_resample_video_fps,
+                                        "-i", file.path(stimuli_path, "raw"),
+                                        "-o", out_path))
+      )
+      
+      list.files(out_path,
+                 full.names = TRUE)
+  
+    },
+    format = "file"
+  )
 )
 
 ## python scripts ----
 
-target_py_flynet_utils <- tar_target(
-  name = py_flynet_utils,
-  command = here::here("python",
-                       "myutils",
-                       "flynet_utils.py"),
-  format = "file"
+targets_python <- list(
+  tar_target(
+    name = py_flynet_utils,
+    command = here::here("python",
+                         "myutils",
+                         "flynet_utils.py"),
+    format = "file"
+  ),
+  tar_target(
+    name = py_convert_flynet_weights,
+    command = {
+      py_flynet_utils
+      here::here("python",
+                 "convert_flynet_weights.py")
+    },
+    format = "file"
+  ),
+  tar_target(
+    name = py_calc_flynet_activations,
+    command = {
+      py_flynet_utils
+      here::here("python",
+                 "calc_flynet_activations.py")
+    },
+    format = "file"
+  ),
+  tar_target(
+    name = py_resample_video_fps,
+    command = here::here("python",
+                         "resample_video_fps.py"),
+    format = "file"
+  ),
+  tar_target(
+    name = py_calc_emonet_activations,
+    command = {
+      py_flynet_utils
+      here::here("python",
+                 "calc_emonet_activations.py")
+    },
+    format = "file"
+  )
 )
 
-target_py_convert_flynet_weights <- tar_target(
-  name = py_convert_flynet_weights,
-  command = here::here("python",
-                       "myutils",
-                       "convert_flynet_weights.py"),
-  format = "file"
+## model weights ----
+
+targets_weights <- list(
+  tar_target(name = weights_zhou2022,
+             command = {
+               download_path <- here::here("ignore",
+                                           "models")
+               dir.create(download_path, showWarnings = FALSE)
+               
+               osf_retrieve_node(osf_project_id) %>% 
+                 osf_ls_files() %>% 
+                 filter(name == "weights") %>% 
+                 osf_ls_files() %>% 
+                 osf_download(path = download_path,
+                              conflicts = "overwrite")
+               
+               list.files(download_path,
+                          pattern = "zhou2022*.npy",
+                          full.names = TRUE)
+             },
+             format = "file"
+  ),
+  tar_target(
+    name = weights_flynet,
+    command = {
+      weights_zhou2022
+      model_path <- here::here("ignore", "models")
+      out_path <- file.path(model_path, "MegaFlyNet256.pt")
+      system2("python", args = c(py_convert_flynet_weights, 
+                                 "-u 256",
+                                 paste("-i", model_path),
+                                 paste("-o", out_path)))
+      out_path
+    },
+    format = "file"
+  ),
+  tar_target(
+    name = weights_emonet,
+    command = {
+      download_path <- here::here("ignore",
+                                  "models")
+      dir.create(download_path, showWarnings = FALSE)
+      model_name <- "EmoNetPythonic.pt"
+      # This is the Ecco Lab Model Zoo OSF repo
+      osf_retrieve_node("pxvyb") %>% 
+        osf_ls_files() %>% 
+        dplyr::filter(name == model_name) %>% 
+        osf_download(path = download_path,
+                     conflicts = "overwrite")
+      
+      file.path(download_path, model_name)
+    },
+    format = "file"
+  )
 )
 
-target_py_calc_flynet_activations <- tar_target(
-  name = py_calc_flynet_activations,
-  command = here::here("python",
-                       "myutils",
-                       "calc_flynet_activations.py"),
-  format = "file"
-)
+## emonet predictions on the videos ----
 
-## emonet dependent stuff ----
-
-# TODO: Fully implement this from the python script
-target_preds.framewise_emonet_ckvids <- tar_target(
-  name = preds.framewise_emonet_ckvids,
-  command = "/home/mthieu/Repos/CowenKeltner/metadata/test_framewise_preds.csv",
-  format = "file"
-)
-
-target_preds.videowise_emonet_ckvids <- tar_target(
-  name = preds.videowise_emonet_ckvids,
-  command = {
-    out <- read_csv(preds.framewise_emonet_ckvids) %>% 
-      select(-guess_1) %>% 
-      group_by(video) %>% 
-      # amazingly, averaging each of the class probs across frames
-      # yields class probs for each video that still add to 1. magical
-      summarize(across(-frame, mean))
-    
-    emotion_classes <- out %>% 
-      select(-video) %>% 
-      colnames()
-    
-    out %>%
-      rename_with(\(x) paste0(".pred_", x), .cols = -video) %>% 
-      rowwise() %>% 
-      # Do it rowwise to keep the class probs in their own cols while getting the max prob col
-      mutate(emotion_pred = emotion_classes[c_across(starts_with(".pred")) == max(c_across(starts_with(".pred")))]) %>% 
-      ungroup() %>% 
-      left_join(read_csv(ids.test_kragel2019), by = "video") %>% 
-      rename(emotion_obs = emotion) %>% 
-      mutate(emotion_obs = factor(emotion_obs),
-             # Pull the levels from the observed labels ecause empathic pain was never guessed
-             emotion_pred = factor(emotion_pred, levels = levels(emotion_obs)))
-  }
-)
-
-target_activations_emonet.fc7_ckvids <- tar_target(
-  name = activations_emonet.fc7_ckvids,
-  command = "/home/mthieu/Repos/CowenKeltner/metadata/kragel2019_videowise_activations_fc7.csv",
-  format = "file"
-)
-
-## flynet setup stuff ----
-
-target_weights_flynet <- tar_target(
-  name = weights_flynet,
-  command = {
-    inject(!!syms(paste0("weights_zhou2022_", 
-                list.files(here::here("ignore",
-                                      "models",
-                                      "zhou2022")))))
-    system2("python", args = c(py_convert_flynet_weights, "-u 256"))
-    here::here("ignore",
-               "models",
-               "MegaFlyNet256.pt")
-  },
-  format = "file"
+targets_preds_emonet <- list(
+  tar_target(
+    name = preds.framewise_emonet_ckvids,
+    command = {
+      videos_cowen2017_10fps
+      out_path <- here::here("ignore",
+                             "outputs",
+                             "subjective",
+                             "emonet_preds.csv") 
+      
+      with_path(here::here("env", "bin"),
+                code = system2("python",
+                               args = c(py_calc_emonet_activations,
+                                        paste("-i", file.path(stimuli_path, "fps10")),
+                                        paste("-o", out_path),
+                                        paste("-w", weights_emonet),
+                                        paste("-m", classes_ck2017_csv))))
+      
+      out_path
+    },
+    format = "file"
+  ), 
+  tar_target(
+    name = preds.videowise_emonet_ckvids,
+    command = {
+      out <- read_csv(preds.framewise_emonet_ckvids) %>% 
+        group_by(video) %>% 
+        # amazingly, averaging each of the class probs across frames
+        # yields class probs for each video that still add to 1. magical
+        summarize(across(-frame, mean))
+      
+      emotion_classes <- out %>% 
+        select(-video) %>% 
+        colnames()
+      
+      out %>%
+        rename_with(\(x) paste0(".pred_", x), .cols = -video) %>% 
+        rowwise() %>% 
+        # Do it rowwise to keep the class probs in their own cols while getting the max prob col
+        mutate(emotion_pred = emotion_classes[c_across(starts_with(".pred")) == max(c_across(starts_with(".pred")))]) %>% 
+        ungroup() %>% 
+        left_join(read_csv(ids.test_kragel2019), by = "video") %>% 
+        rename(emotion_obs = emotion) %>% 
+        mutate(emotion_obs = factor(emotion_obs),
+               # Pull the levels from the observed labels because empathic pain was never guessed
+               emotion_pred = factor(emotion_pred, levels = levels(emotion_obs)))
+    }
+  )
 )
 
 ## flynet activations ----
 
-target_activations_flynet_ckvids <- tar_target(
-  name = activations_flynet_ckvids,
-  command = {
-    weights_flynet
-    system2("python",
-            args = c(py_calc_flynet_activations,
-                     "-l 132",
-                     "-p /home/mthieu/Repos/CowenKeltner",
-                     "-v videos_10fps",
-                     "-m metadata",
-                     "-q activations"))
-    "/home/mthieu/Repos/CowenKeltner/metadata/flynet_132x132_stride8_activations.csv"
-  },
-  format = "file"
+targets_activations_flynet <- list(
+  tar_target(
+    name = activations_flynet_ckvids,
+    command = {
+      weights_flynet
+      
+      video_paths <- videos_cowen2017_10fps
+      out_fstring <- here::here("ignore",
+                                "outputs",
+                                "subjective",
+                                "flynet_activations_%02d.csv") 
+      n_batches <- 99
+      batch_indices <- round(seq(1, n_batches, length.out = length(video_paths)))
+      
+      # break it up into batches bc the list-arg of videos can't handle that many characters
+      for (batch in 1:n_batches) {
+        out_path <- sprintf(out_fstring,
+                            batch)
+        these_videos <- paste(video_paths[batch_indices == batch], collapse = " ")
+        
+        system2("python",
+                args = c(py_calc_flynet_activations,
+                         "-l 132",
+                         paste("-i", these_videos),
+                         paste("-o", out_path),
+                         paste("-w", weights_flynet),
+                         "-q activations"))
+      }
+      
+      sprintf(out_fstring, 1:n_batches)
+    },
+    format = "file"
+  ),
+  tar_target(
+    name = rsplit_flynet_ckvids,
+    command = {
+      activations <- get_flynet_activation_ck2017(activations_flynet_ckvids, classes_ck2017) %>% 
+        left_join(ratings_ck2017 %>% 
+                    select(video, looming),
+                  by = "video")
+      # Use pre-existing Kragel 2019 train-test split to make an rsample-compatible split object
+      make_splits(x = filter(activations, split == "train"),
+                  assessment = filter(activations, split == "test"))
+    }
+  )
 )
 
 ## beh model fitting ----
-
-target_rsplit_flynet_ckvids <- tar_target(
-  name = rsplit_flynet_ckvids,
-  command = {
-    activations <- get_flynet_activation_ck2017(activations_flynet_ckvids, classes_ck2017) %>% 
-      left_join(read_csv(ratings_ck2017) %>% 
-                  select(video = Filename, looming = Looming),
-                by = "video")
-    # Use pre-existing Kragel 2019 train-test split to make an rsample-compatible split object
-    make_splits(x = filter(activations, split == "train"),
-                assessment = filter(activations, split == "test"))
-  }
-)
 
 targets_preds_misc <- list(
   tar_target(
@@ -258,12 +464,11 @@ targets_preds_misc <- list(
   tar_target(
     name = glm_looming.flynet_ckvids,
     command = {
-      ratings <- read_csv(ratings_ck2017) %>% 
-        rename(video = Filename, arousal = arousal...39)
+      ratings <- ratings_ck2017
       
       this_recipe <- recipe(head(ratings)) %>% 
         update_role(arousal, valence, Fear, new_role = "predictor") %>% 
-        update_role(Looming, new_role = "outcome") %>% 
+        update_role(looming, new_role = "outcome") %>% 
         update_role(video, new_role = "ID") %>% 
         step_normalize(all_predictors()) %>% 
         step_bin2factor(all_outcomes(), ref_first = FALSE, skip = TRUE)
@@ -297,67 +502,37 @@ targets_preds_misc <- list(
   )
 )
 
-target_rsplit_emonet.fc7_ckvids <- tar_target(
-  name = rsplit_emonet.fc7_ckvids,
-  command = {
+targets_model_confusions_bothnets_ckvids <- list(
+  tar_target(
+    name = coefs.confusions_bothnets_ckvids,
+    command = get_confusion_regression_coefs(confusions_ckvids,
+                                             lm_formulas = list(valence = diff_valence ~ dist_flynet + dist_emonet,
+                                                                arousal = diff_arousal ~ dist_flynet + dist_emonet,
+                                                                fear = diff_fear ~ dist_flynet + dist_emonet,
+                                                                fear_no_arousal = diff_fear ~ dist_flynet + dist_emonet + diff_arousal,
+                                                                looming = diff_looming ~ dist_flynet + dist_emonet))
     
-    activations <- read_csv(activations_emonet.fc7_ckvids) %>% 
-      # selects 256 units to get a model with the same sparsity as FlyNet
-      # It's not random because I didn't want to set a target-specific seed
-      select(video, !!seq(17, 4097, length.out = 256)) %>% 
-      rename_with(\(x) paste0("unit_", x),.cols = -video) %>% 
-      inner_join(classes_ck2017, by = "video")
-    # Use pre-existing Kragel 2019 train-test split to make an rsample-compatible split object
-    make_splits(x = filter(activations, split == "train"),
-                assessment = filter(activations, split == "test"))
-  }
-)
-
-target_preds_emonet.fc7_ckvids <- tar_target(
-  name = preds_emonet.fc7_ckvids,
-  command = {
-    discrim_recipe <- rsplit_emonet.fc7_ckvids %>% 
-      training() %>% 
-      get_discrim_recipe()
-    
-    discrim_recipe %>% 
-      get_discrim_workflow() %>% 
-      fit(data = training(rsplit_emonet.fc7_ckvids)) %>% 
-      get_discrim_preds_from_trained_model(in_recipe = discrim_recipe,
-                                           test_data = testing(rsplit_emonet.fc7_ckvids))
-  }
-)
-
-target_coefs.confusions_bothnets_ckvids <- tar_target(
-  name = coefs.confusions_bothnets_ckvids,
-  command = get_confusion_regression_coefs(confusions_ckvids,
-                                           lm_formulas = list(valence = diff_valence ~ dist_flynet + dist_emonet,
-                                                              arousal = diff_arousal ~ dist_flynet + dist_emonet,
-                                                              fear = diff_fear ~ dist_flynet + dist_emonet,
-                                                              fear_no_arousal = diff_fear ~ dist_flynet + dist_emonet + diff_arousal,
-                                                              looming = diff_looming ~ dist_flynet + dist_emonet))
-  
-)
-
-target_partial.r2.confusions_bothnets_ckvids <- tar_target(
-  name = partial.r2.confusions_bothnets_ckvids,
-  command = {
-    half_confusions <- confusions_ckvids %>% 
-      halve_confusions()
-    
-    tribble(~outcome, ~term, ~partial.r2,
-            "valence", "dist_flynet", calc_partial_r2(half_confusions, "diff_valence", "dist_flynet", "dist_emonet"),
-            "valence", "dist_emonet", calc_partial_r2(half_confusions, "diff_valence", "dist_emonet", "dist_flynet"),
-            "arousal", "dist_flynet", calc_partial_r2(half_confusions, "diff_arousal", "dist_flynet", "dist_emonet"),
-            "arousal", "dist_emonet", calc_partial_r2(half_confusions, "diff_arousal", "dist_emonet", "dist_flynet"),
-            "fear", "dist_flynet", calc_partial_r2(half_confusions, "diff_fear", "dist_flynet", "dist_emonet"),
-            "fear", "dist_emonet", calc_partial_r2(half_confusions, "diff_fear", "dist_emonet", "dist_flynet"),
-            "fear_no_arousal", "dist_flynet", calc_partial_r2(half_confusions, "diff_fear", "dist_flynet", c("dist_emonet", "diff_arousal")),
-            "fear_no_arousal", "dist_emonet", calc_partial_r2(half_confusions, "diff_fear", "dist_emonet", c("dist_flynet", "diff_arousal")),
-            "looming", "dist_flynet", calc_partial_r2(half_confusions, "diff_looming", "dist_flynet", "dist_emonet"),
-            "looming", "dist_emonet", calc_partial_r2(half_confusions, "diff_looming", "dist_emonet", "dist_flynet")
-    )
-  }
+  ),
+  tar_target(
+    name = partial.r2.confusions_bothnets_ckvids,
+    command = {
+      half_confusions <- confusions_ckvids %>% 
+        halve_confusions()
+      
+      tribble(~outcome, ~term, ~partial.r2,
+              "valence", "dist_flynet", calc_partial_r2(half_confusions, "diff_valence", "dist_flynet", "dist_emonet"),
+              "valence", "dist_emonet", calc_partial_r2(half_confusions, "diff_valence", "dist_emonet", "dist_flynet"),
+              "arousal", "dist_flynet", calc_partial_r2(half_confusions, "diff_arousal", "dist_flynet", "dist_emonet"),
+              "arousal", "dist_emonet", calc_partial_r2(half_confusions, "diff_arousal", "dist_emonet", "dist_flynet"),
+              "fear", "dist_flynet", calc_partial_r2(half_confusions, "diff_fear", "dist_flynet", "dist_emonet"),
+              "fear", "dist_emonet", calc_partial_r2(half_confusions, "diff_fear", "dist_emonet", "dist_flynet"),
+              "fear_no_arousal", "dist_flynet", calc_partial_r2(half_confusions, "diff_fear", "dist_flynet", c("dist_emonet", "diff_arousal")),
+              "fear_no_arousal", "dist_emonet", calc_partial_r2(half_confusions, "diff_fear", "dist_emonet", c("dist_flynet", "diff_arousal")),
+              "looming", "dist_flynet", calc_partial_r2(half_confusions, "diff_looming", "dist_flynet", "dist_emonet"),
+              "looming", "dist_emonet", calc_partial_r2(half_confusions, "diff_looming", "dist_emonet", "dist_flynet")
+      )
+    }
+  )
 )
 
 targets_stats_misc <- list(
@@ -452,7 +627,7 @@ targets_perms <- list(
                                    truth_col = emotion_obs,
                                    estimate_col = emotion_pred,
                                    pred_prefix = ".pred", 
-                                   path_ratings = ratings_ck2017, 
+                                   ratings = ratings_ck2017, 
                                    path_ids_train = ids.train_kragel2019,
                                    resample_type = "permute",
                                    times = n_reps_per_batch) %>% 
@@ -468,7 +643,7 @@ targets_perms <- list(
                                    truth_col = emotion_obs,
                                    estimate_col = emotion_pred,
                                    pred_prefix = ".pred", 
-                                   path_ratings = ratings_ck2017, 
+                                   ratings = ratings_ck2017, 
                                    path_ids_train = ids.train_kragel2019,
                                    resample_type = "bootstrap",
                                    times = n_reps_per_batch) %>% 
@@ -714,7 +889,7 @@ target_mds.coords_ckvids <- tar_target(
   name = mds.coords_ckvids,
   command = {
     rating_means <- read_csv(ratings_ck2017) %>% 
-      select(video = Filename, arousal = arousal...39, valence) %>% 
+      select(video, arousal, valence) %>% 
       # Keep only the TRAINING videos
       # so this has the effect of "fitting" a "model" on the training videos
       inner_join(read_csv(ids.train_kragel2019), 
@@ -752,7 +927,10 @@ targets_tables <- list(
   tar_target(
     name = summary_partial.r2_bothnets_ckvids,
     command = {
-      out_path <- "/home/data/eccolab/SPLaT/supptable_subjective_distance.model_perf.csv"
+      out_path <- here::here("ignore",
+                             "outputs",
+                             "retinotopy",
+                             "supptable_subjective_distance.model_perf.csv")
       
       perm.pvals_partial.r2_bothnets_ckvids %>% 
         ungroup() %>% 
@@ -1130,23 +1308,14 @@ targets_figs <- list(
 
 ## the list of all the target metanames ----
 
-list(target_ratings_ck2017,
-     target_censored_ck2017,
-     target_ids.train_kragel2019,
-     target_ids.test_kragel2019,
-     target_classes_ck2017,
-     target_weights_zhou2022,
-     target_py_flynet_utils,
-     target_py_convert_flynet_weights,
-     target_py_calc_flynet_activations,
-     target_preds.framewise_emonet_ckvids,
-     target_preds.videowise_emonet_ckvids,
-     target_weights_flynet,
-     target_activations_flynet_ckvids,
-     target_rsplit_flynet_ckvids,
+list(targets_ratings,
+     targets_stimuli,
+     targets_weights,
+     targets_python,
+     targets_preds_emonet,
+     targets_activations_flynet,
      targets_preds_misc,
-     target_coefs.confusions_bothnets_ckvids,
-     target_partial.r2.confusions_bothnets_ckvids,
+     targets_model_confusions_bothnets_ckvids,
      targets_stats_misc,
      targets_perms,
      target_perms.partial.r2_bothnets_ckvids,
