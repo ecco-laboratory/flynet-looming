@@ -14,10 +14,11 @@ mode_char <- function (x) {
 
 ## read in raw activations and estimate video-wise ints and slopes ----
 
-get_flynet_activation_ck2017 <- function (file, metadata) {
+get_flynet_activation_ck2017 <- function (files, metadata) {
   
-  out <- file %>%
-    read_csv() %>% 
+  out <- files %>%
+    map(\(x) read_csv(x)) %>%
+    bind_rows() %>% 
     # inner_join keeps only videos that appear in the kragel 2019 subset of the metadata
     inner_join(metadata, by = "video") %>% 
     pivot_longer(cols = -c(video, split, frame, emotion, censored),
@@ -218,11 +219,11 @@ calc_distances_modelprobs <- function (preds) {
   return (out)
 }
 
-calc_distances_ratings <- function (path_ratings, path_ids_filter = NULL) {
+calc_distances_ratings <- function (ratings, path_ids_filter = NULL) {
   # The target is a path to file so focus on making that the function arg
   # versus having them each take a df as input
-  out <- read_csv(path_ratings) %>% 
-    select(video = Filename, arousal = arousal...39, valence, fear = Fear, looming = Looming)
+  out <- ratings %>% 
+    select(video, arousal, valence, fear = Fear, looming)
   
   if (!is.null(path_ids_filter)) {
     out %<>%
@@ -325,7 +326,7 @@ resample_beh_metrics <- function (in_preds_flynet,
                                   truth_col, 
                                   estimate_col, 
                                   pred_prefix, 
-                                  path_ratings, 
+                                  ratings, 
                                   path_ids_train,
                                   resample_type = "permute",
                                   times) {
@@ -334,7 +335,7 @@ resample_beh_metrics <- function (in_preds_flynet,
   
   # hold onto it so that we can compare the permuted pred distances
   # with the valence and arousal distances
-  rating_distances <- calc_distances_ratings(path_ratings, path_ids_train)
+  rating_distances <- calc_distances_ratings(ratings, path_ids_train)
   
   # Per Kragel 2019 paper, this takes finished preds,
   # which effectively keeps the training model the same, without refitting it
