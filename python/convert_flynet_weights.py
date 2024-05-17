@@ -10,37 +10,34 @@ import torch
 from myutils.flynet_utils import MegaFlyNet, get_disk_mask
 
 # %%
-# Paths and shit
-
-# Need to set repo path because I suspect
-# when slurm runs this it doesn't immediately know what is up
-repo_path = '/home/mthieu/Repos/emonet-py/'
-model_path = os.path.join(repo_path, 'ignore', 'models')
-zhou2022_path = os.path.join(model_path, 'zhou2022')
-
-# %%
 # Arg definition and capture
 parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
 parser.add_argument(
-    '-u',
-    '--units',
-    default=256,
-    type=int,
-    choices=[32,256],
-    help="Which model (32 or 256 units) to pull pre-trained kernel filter from?"
+    '-i',
+    '--in_folder',
+    type=str,
+    help="Folder where Zhou et al. (2022) pre-trained kernel filter weights are saved"
 )
+parser.add_argument(
+    '-o',
+    '--out_path',
+    type=str,
+    help="Full path and filename to write out PyTorch-ified weights"
+)
+
 args = vars(parser.parse_args())
 
-n_units_zhou2022 = args['units']
+zhou2022_path = args['in_folder']
+model_path = args['out_path']
 
 # %%
 # Dewit
 
 # Load in Baohua's weights
-conv_filter = np.load(os.path.join(zhou2022_path, 'zhou2022_{}unit_weights.npy'.format(n_units_zhou2022)))
-conv_bias = torch.tensor(np.load(os.path.join(zhou2022_path, 'zhou2022_{}unit_intercept.npy'.format(n_units_zhou2022))))
-classifier_weight = torch.tensor(np.load(os.path.join(zhou2022_path, 'zhou2022_{}unit_classifier_a.npy'.format(n_units_zhou2022))), dtype=torch.float32)
-classifier_bias = torch.tensor(np.load(os.path.join(zhou2022_path, 'zhou2022_{}unit_classifier_b.npy'.format(n_units_zhou2022))))
+conv_filter = np.load(os.path.join(zhou2022_path, 'zhou2022_256unit_weights.npy'))
+conv_bias = torch.tensor(np.load(os.path.join(zhou2022_path, 'zhou2022_256unit_intercept.npy')))
+classifier_weight = torch.tensor(np.load(os.path.join(zhou2022_path, 'zhou2022_256unit_classifier_a.npy')), dtype=torch.float32)
+classifier_bias = torch.tensor(np.load(os.path.join(zhou2022_path, 'zhou2022_256unit_classifier_b.npy')))
 
 # Mask out corner pixels so that the conv filter is circular
 # masking behaves weird on tensors... leave it as np until the end
@@ -59,4 +56,4 @@ megaflynet.classifier.weight.data = classifier_weight.unsqueeze(0).unsqueeze(0)
 megaflynet.classifier.bias.data = classifier_bias
 
 # Save the weights out as a .pt file so I don't have to run this every time
-torch.save(megaflynet.state_dict(), os.path.join(model_path, 'MegaFlyNet{}.pt'.format(n_units_zhou2022)))
+torch.save(megaflynet.state_dict(), model_path)
