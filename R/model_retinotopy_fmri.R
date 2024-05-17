@@ -375,37 +375,25 @@ fit_xval <- function (in_x, in_y, n_folds = NULL, predictor_cols = starts_with("
 
 ## calculating permuted p-values ----
 
-combine_perms_studyforrest <- function (permuted_trs,
-                                        combined_preds_metrics) {
-  super_perms <- map(combined_preds_metrics,
-                     \(x) wrap_perms(permuted_trs = permuted_trs,
-                                     preds_together = x$together$preds,
-                                     metrics_together = x$together$metrics,
-                                     preds_by.run.type = x$by.run.type$preds,
-                                     metrics_by.run.type = x$by.run.type$metrics))
-  # works bc map on a named list returns a named list
-  return (bind_rows(super_perms, .id = "parameter"))
-}
-
 wrap_perms <- function (permuted_trs, 
                         preds_together, 
                         metrics_together,
                         preds_by.run.type, 
-                        metrics_by.run.type,
-                        summarize_voxels = FALSE) {
+                        metrics_by.run.type) {
   
   perms_together <- preds_together %>%
     wrap_pred_metrics(permute_order = permuted_trs,
                       decoding = FALSE) %>% 
     select(-preds) %>% 
-    bind_perm_to_real(metrics_together)
+    # summarize voxels away ALWAYS
+    bind_perm_to_real(metrics_together, summarize_voxels = TRUE)
   
   perms_by.run.type <- preds_by.run.type %>% 
     rename(run_type = this_run_type) %>% 
     wrap_pred_metrics(permute_order = permuted_trs,
                       decoding = FALSE) %>% 
     select(-preds) %>% 
-    bind_perm_to_real(metrics_by.run.type)
+    bind_perm_to_real(metrics_by.run.type, summarize_voxels = TRUE)
   
   left_join(perms_together,
             perms_by.run.type,
@@ -413,174 +401,33 @@ wrap_perms <- function (permuted_trs,
             suffix = c("_overall", "_by.run.type"))
 }
 
-bind_perm_to_real <- function (perm, real) {
+bind_perm_to_real <- function (perm, real, summarize_voxels) {
+  
+  if (summarize_voxels) {
+    # if true, the summarizing will summarize over (and thus drop) voxel num
+    grouping_cols <- c("stim_type", "subj_num")
+  } else {
+    grouping_cols <- c("stim_type", "subj_num", "voxel_num")
+  }
+  
   real <- real %>% 
     select(perf) %>% 
     unnest(perf) %>% 
-    # summarize AWAY voxel num ALWAYS
-    group_by(stim_type, subj_num) %>% 
+    group_by(!!!syms(grouping_cols)) %>% 
     summarize(r.model = mean(r_model), 
               .groups = "drop")
   
   perm <- perm %>% 
     select(perf) %>% 
     unnest(perf) %>% 
-    # summarize AWAY voxel num ALWAYS
-    group_by(stim_type, subj_num) %>% 
+    group_by(!!!syms(grouping_cols)) %>% 
     summarize(r.model = mean(r_model), 
               .groups = "drop")
   
   joined <- left_join(perm, real, 
-                      by = c("stim_type", "subj_num"), 
+                      by = grouping_cols, 
                       suffix = c("_perm" , "_real")) %>% 
-    select(stim_type, subj_num, starts_with("r.model"))
+    select(!!!grouping_cols, starts_with("r.model"))
   
   return (joined)
-}
-
-calc_perm_pvals <- function (metrics_flynet_overall,
-                             metrics_flynet_by.run.type,
-                             metrics_only.formula_overall,
-                             metrics_only.formula_by.run.type,
-                             metrics_formula_overall,
-                             metrics_formula_by.run.type,
-                             perms,
-                             extra_grouping_cols = NULL,
-                             has_voxel_num = TRUE) {
-  
-  extra_grouping_cols_str <- enexpr(extra_grouping_cols)
-  # edge case if it's not wrapped in c()
-  if (is_symbol(extra_grouping_cols_str)) {
-    extra_grouping_cols_str <- as_name(extra_grouping_cols_str)
-  } else {
-    extra_grouping_cols_str <- map_chr(extra_grouping_cols_str, \(x) as_name(x))
-  }
-  
-  # summarize each real metric df down by voxel to get one value per condition per held-out subject
-  
-  r_together <- bind_rows(metrics_flynet_overall %>% 
-                            mutate(parameter = "flynet"), 
-                          metrics_formula_overall %>% 
-                            mutate(parameter = paste0("flynet.", parameter)), 
-                          metrics_only.formula_overall) %>% 
-    select(parameter, perf) %>% 
-    unnest(perf) %>% 
-    # summarize AWAY voxel num ALWAYS
-    group_by(parameter, stim_type, subj_num) %>% 
-    summarize(r.model = mean(r_model), 
-              .groups = "drop")
-  
-  r_by.run.type <- bind_rows(metrics_flynet_by.run.type %>% 
-                               mutate(parameter = "flynet"), 
-                             metrics_formula_by.run.type %>% 
-                               mutate(parameter = paste0("flynet.", parameter)), 
-                             metrics_only.formula_by.run.type) %>% 
-    select(parameter, perf) %>% 
-    unnest(perf) %>% 
-    group_by(parameter, stim_type, subj_num) %>% 
-    summarize(r.model = mean(r_model), 
-              .groups = "drop")
-  
-  # join all the metrics together into a big df
-  
-  r_joined <- full_join(r_together,
-                        r_by.run.type,
-                        by = c("parameter", "stim_type", "subj_num"),
-                        suffix = c("_together", "_by.run.type")) %>% 
-    mutate(r.model_diff = r.model_by.run.type - r.model_together)
-  
-  join_cols <- c("parameter", "fold_num", "stim_type")
- # if (has_voxel_num) join_cols <- c(join_cols, "subj_num", "voxel_num")
-
-  out <- perms %>% 
-    # pre-unnest to get them to line up together
-    mutate(together = map(together,
-                          \(x) x %>% 
-                            select(-test_subjs) %>%
-                            unnest(perf),
-                          .progress = "unnesting stim general perms"),
-           by.run.type = map(by.run.type,
-                             \(x) x %>%
-                               select(-test_subjs) %>%
-                               unnest(perf),
-                             .progress = "unnesting stim specific perms")) %>% 
-    mutate(joined = map2(together, by.run.type,
-                         \(x, y) full_join(x, y,
-                                           by = join_cols,
-                                           suffix = c("_together", "_by.run.type")),
-                         .progress = "binding stim general and specific perms")) %>%
-    select(tar_batch, tar_rep, joined) %>%
-    unnest(joined)
-  
-  if (!("subj_num" %in% colnames(out))) {
-    out %<>%
-      rename(subj_num = fold_num)
-    
-    join_cols <- c(join_cols, "subj_num")
-  }
-  
-  out %<>%
-    # calculate the permuted difference in predicted-actual BOLD R
-    select(starts_with("tar"), any_of(join_cols), starts_with("r_model")) %>% 
-    rename_with(\(x) str_replace(x, "r_model", "r.model"), everything()) %>% 
-    mutate(r.model_diff = r.model_by.run.type - r.model_together) %>% 
-    # summarize over voxels, keeping subjects/folds separate
-    group_by(tar_batch, tar_rep, {{extra_grouping_cols}}, stim_type, subj_num) %>% 
-    summarize(across(starts_with("r.model"), mean), .groups = "drop") %>% 
-    # bind the real differences on
-    left_join(r_joined, by = c(extra_grouping_cols_str, "stim_type", "subj_num"), suffix = c("_perm", "_real")) %>% 
-    # summarize over folds (and potentially voxels) within each perm iteration
-    group_by(tar_batch, tar_rep, {{extra_grouping_cols}}, stim_type) %>% 
-    summarize(across(starts_with("r."), mean), .groups = "drop") %>% 
-    select(tar_batch, tar_rep, {{extra_grouping_cols}}, stim_type, starts_with("r.model")) %>%
-    # so that _ is the delimiter between info chunks in the colnames
-    mutate(stim_type = str_replace(stim_type, "_", ".")) # %>% 
-  
-  if (FALSE) {
-    # 2023-12-08: SPLIT IT OFF HERE? So that you can calculate more flexy pairwise p-values
-    pivot_longer(cols = starts_with("r.model"),
-                 names_to = c(NA, "r_type", ".value"),
-                 names_sep = "_") %>% 
-    # reapply the prefixes bc they get dropped off with pivot_longer
-    rename(r.model_perm = perm, r.model_real = real) %>% 
-    # collect the non-ring-expand diffs together
-    pivot_wider(names_from = stim_type, values_from = starts_with("r.model")) %>%
-    rowwise() %>% 
-    mutate(r.model_real_other3 = mean(c_across(any_of(c("r.model_real_wedge.clock",
-                                                        "r.model_real_wedge.counter",
-                                                        "r.model_real_ring.contract"))),
-                                      na.rm = TRUE),
-           r.model_perm_other3 = mean(c_across(any_of(c("r.model_perm_wedge.clock",
-                                                        "r.model_perm_wedge.counter",
-                                                        "r.model_perm_ring.contract"))),
-                                      na.rm = TRUE),
-           r.model_real_avg = mean(c_across(any_of(c("r.model_real_ring.expand",
-                                                     "r.model_real_wedge.clock",
-                                                     "r.model_real_wedge.counter",
-                                                     "r.model_real_ring.contract"))),
-                                   na.rm = TRUE),
-           r.model_perm_avg = mean(c_across(any_of(c("r.model_real_ring.expand",
-                                                     "r.model_perm_wedge.clock",
-                                                     "r.model_perm_wedge.counter",
-                                                     "r.model_perm_ring.contract"))),
-                                   na.rm = TRUE)) %>% 
-    ungroup() %>% 
-    mutate(r.model_real_diff = r.model_real_ring.expand - r.model_real_other3,
-           r.model_perm_diff = r.model_perm_ring.expand - r.model_perm_other3,
-           r.model_real_diffring = r.model_real_ring.expand - r.model_real_ring.contract,
-           r.model_perm_diffring = r.model_perm_ring.expand - r.model_perm_ring.contract) %>%
-    pivot_longer(cols = starts_with("r.model"),
-                 names_to = c(".value", "stim_type"),
-                 names_sep = 12L) %>% 
-    # trim off the hanging _
-    mutate(stim_type = str_sub(stim_type, start = 2L)) %>% 
-    filter(!(r_type %in% c("together", "by.run.type") & stim_type %in% c("other3", "diff", "diffring"))) %>% 
-    group_by({{extra_grouping_cols}}, r_type, stim_type) %>% 
-    # now get empirical p-vals from the distribution
-    summarize(value = mean(r.model_real),
-              pval = (sum(r.model_perm > r.model_real)+1) / (n()+1),
-              .groups = "drop")
-  }
-  
-  return (out)
 }
