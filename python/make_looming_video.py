@@ -1,7 +1,6 @@
 # %%
 # imports
 import os
-import platform
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 
 import cv2
