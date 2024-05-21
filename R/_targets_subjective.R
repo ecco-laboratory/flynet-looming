@@ -31,15 +31,9 @@ tar_option_set(
   # Set other options as needed.
 )
 
-# tar_make_clustermq() configuration (okay to leave alone):
-options(clustermq.scheduler = "slurm")
-options(clustermq.template = "clustermq.tmpl")
-
 # tar_make_future() configuration (okay to leave alone):
 # Install packages {{future}}, {{future.callr}}, and {{future.batchtools}} to allow use_targets() to configure tar_make_future() options.
 
-# plan(multicore)
-# eventually... when I figure out why slurm is activating R 3.6.3
 n_slurm_cpus <- 1L
 plan(batchtools_slurm,
      template = "future.tmpl",
@@ -315,10 +309,11 @@ targets_weights <- list(
       weights_zhou2022
       model_path <- here::here("ignore", "models")
       out_path <- file.path(model_path, "MegaFlyNet256.pt")
-      system2("python", args = c(py_convert_flynet_weights, 
-                                 "-u 256",
+      
+      with_path(here::here("env", "bin"),
+                code = system2("python", args = c(py_convert_flynet_weights, 
                                  paste("-i", model_path),
-                                 paste("-o", out_path)))
+                                 paste("-o", out_path))))
       out_path
     },
     format = "file"
@@ -417,13 +412,14 @@ targets_activations_flynet <- list(
                             batch)
         these_videos <- paste(video_paths[batch_indices == batch], collapse = " ")
         
-        system2("python",
-                args = c(py_calc_flynet_activations,
-                         "-l 132",
-                         paste("-i", these_videos),
-                         paste("-o", out_path),
-                         paste("-w", weights_flynet),
-                         "-q activations"))
+        with_path(here::here("env", "bin"),
+                  code = system2("python",
+                                 args = c(py_calc_flynet_activations,
+                                          "-l 132",
+                                          paste("-i", these_videos),
+                                          paste("-o", out_path),
+                                          paste("-w", weights_flynet),
+                                          "-q activations")))
       }
       
       sprintf(out_fstring, 1:n_batches)

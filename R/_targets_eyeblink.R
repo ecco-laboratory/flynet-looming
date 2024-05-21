@@ -16,7 +16,8 @@ library(rlang)
 
 # Set target options:
 tar_option_set(
-  packages = c("osfr",
+  packages = c("withr",
+               "osfr",
                "tidymodels",
                "poissonreg",
                "tidyverse",
@@ -27,10 +28,6 @@ tar_option_set(
   format = "rds" # default storage format
   # Set other options as needed.
 )
-
-# tar_make_clustermq() configuration (okay to leave alone):
-options(clustermq.scheduler = "slurm")
-options(clustermq.template = "clustermq.tmpl")
 
 # tar_make_future() configuration (okay to leave alone):
 n_slurm_cpus <- 1L
@@ -179,20 +176,22 @@ targets_stimuli <- list(
           # print any of the associated stimuli that need to be tracked
           # run the python script
           cat("loomtime:", crayon::green(loom_time), fill = TRUE)
-          system2("python", args = c(py_make_looming_video,
-                                     paste("--infile", img),
-                                     paste("--outpath", out_path),
-                                     # Adult Ps sat 40 cm away from monitor
-                                     # and I think it needs to come 4 obj-widths away
-                                     paste("--diststart 15"),
-                                     paste("--distend 1"),
-                                     paste("--loomtime", loom_time),
-                                     # visual angle should be 15.1 degrees?
-                                     # Which is... kind of huge?
-                                     paste("--objwidth 100"),
-                                     # to get it as close to 1 frame per 33 ms as possible
-                                     paste("--fps 29")
-          )) 
+          
+          with_path(here::here("env", "bin"),
+                    code = system2("python", args = c(py_make_looming_video,
+                                                      paste("--infile", img),
+                                                      paste("--outpath", out_path),
+                                                      # Adult Ps sat 40 cm away from monitor
+                                                      # and I think it needs to come 4 obj-widths away
+                                                      paste("--diststart 15"),
+                                                      paste("--distend 1"),
+                                                      paste("--loomtime", loom_time),
+                                                      # visual angle should be 15.1 degrees?
+                                                      # Which is... kind of huge?
+                                                      paste("--objwidth 100"),
+                                                      # to get it as close to 1 frame per 33 ms as possible
+                                                      paste("--fps 29")
+                    )))
         }
       }
       # print the path to the output videos
@@ -213,13 +212,14 @@ targets_activations <- list(
                              "eyeblink",
                              "flynet_activations.csv") 
       
-      system2("python",
-              args = c(py_calc_flynet_activations,
-                       "-l 132",
-                       paste("-i", video_paths),
-                       paste("-o", out_path),
-                       paste("-w", weights_flynet),
-                       "-q activations"))
+      with_path(here::here("env", "bin"),
+                code = system2("python",
+                               args = c(py_calc_flynet_activations,
+                                        "-l 132",
+                                        paste("-i", video_paths),
+                                        paste("-o", out_path),
+                                        paste("-w", weights_flynet),
+                                        "-q activations")))
       out_path
     },
     format = "file"
@@ -233,13 +233,14 @@ targets_activations <- list(
                              "eyeblink",
                              "flynet_hitprobs.csv")
       
-      system2("python",
-              args = c(py_calc_flynet_activations,
-                       "-l 132",
-                       paste("-i", video_paths),
-                       paste("-o", out_path),
-                       paste("-w", weights_flynet),
-                       "-q hit_probs"))
+      with_path(here::here("env", "bin"),
+                code = system2("python",
+                               args = c(py_calc_flynet_activations,
+                                        "-l 132",
+                                        paste("-i", video_paths),
+                                        paste("-o", out_path),
+                                        paste("-w", weights_flynet),
+                                        "-q hit_probs")))
 
       out_path
     },

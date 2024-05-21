@@ -15,7 +15,8 @@ library(tibble)
 
 # Set target options:
 tar_option_set(
-  packages = c("mixOmics",
+  packages = c("osfr",
+               "mixOmics",
                "tidymodels",
                "plsmod",
                "tidyverse",
@@ -30,10 +31,6 @@ tar_option_set(
   format = "rds" # default storage format
   # Set other options as needed.
 )
-
-# tar_make_clustermq() configuration (okay to leave alone):
-options(clustermq.scheduler = "slurm")
-options(clustermq.template = "clustermq.tmpl")
 
 # tar_make_future() configuration (okay to leave alone):
 n_slurm_cpus <- 1L
@@ -51,7 +48,7 @@ plan(batchtools_slurm,
                       # The permutation tests for V1 are getting huge, they seem to need ~4 GB
                       # The Matlab-based permutation tests for model-based connectivity are also hefty
                       # they perform best with... 32 GB?! Just 2 b safe
-                      memory = 4000L,
+                      memory = 1000L,
                       partition = "short"))
 # These parameters are relevant later inside the permutation testing targets
 n_batches <- 500
@@ -67,6 +64,8 @@ tar_source(c("R/get_flynet_activation_timecourses.R",
              "R/utils/call-spm.R"))
 
 matlab_path <- "/opt/MATLAB/R2024a/bin"
+
+osf_project_id <- "as4vm"
 
 ## data files from other people's stuff ----
 
@@ -1335,7 +1334,21 @@ targets_niftis <- list(
   tar_target(
     name = nifti.path_sc,
     # TODO: generate this from canlabtools script
-    command = here::here("ignore", "utils", "retinotopy", "SC_mask_vox_indx.nii"),
+    command = {
+      download_path <- here::here("ignore", "utils", "retinotopy")
+      dir.create(download_path, showWarnings = FALSE)
+      file_name <- "SC_mask_vox_indx.nii"
+      
+      osf_retrieve_node(osf_project_id) %>% 
+        osf_ls_files() %>% 
+        filter(name == "retinotopy") %>% 
+        osf_ls_files() %>%  
+        filter(name == file_name) %>% 
+        osf_download(path = download_path,
+                     conflicts = "overwrite")
+      
+      file.path(download_path, file_name)
+      },
     format = "file"
   ),
   tar_target(
