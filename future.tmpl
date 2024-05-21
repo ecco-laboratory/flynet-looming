@@ -35,11 +35,6 @@ log.file = fs::path_expand(log.file)
 <%= if (array.jobs) sprintf("#SBATCH --array=1-%i", nrow(jobs)) else "" %>
 #SBATCH
 
-## Initialize work environment like
-## source /etc/profile
-# module load R/4.2.1
-cd ~/Repos/emonet-py
-
 ## Export value of DEBUGME environemnt var to slave
 #export DEBUGME=<%= Sys.getenv("DEBUGME") %>
 
