@@ -1,7 +1,7 @@
 # flynet-looming
 code for paper: "Visual looming is a primitive for human emotion", Thieu, Ayzenberg, Lourenco, & Kragel (2024) iScience
 
-DOCUMENTATION IN PROGRESS! Sorry about that... I am cleaning up the code! -Monica Thieu
+Please post any questions about the analysis repository as repo issues and we'll get to you as soon as we can. Enjoy!
 
 ## SHORT VERSION
 
