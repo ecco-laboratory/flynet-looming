@@ -1,16 +1,23 @@
-name: /home/mthieu/Repos/emonet-py/env
+name: [YOUR_SOURCE_PATH]/flynet-looming/env
 channels:
+  - pytorch
   - defaults
   - conda-forge
 dependencies:
+  - python=3.9.13
   - pandas
-  - seaborn
-  - onnx
   - pillow
   - numpy
-  - onnxruntime
-  - scikit-learn
-  - pycocotools
-  - onnx2torch
   - ipykernel
-prefix: /home/mthieu/Repos/emonet-py/env
+  - torchvision=0.13.1
+  - tqdm
+  - ipywidgets
+  - av
+  - cudatoolkit=11.6
+  - pytorch=1.12.1
+  - requests
+  - opencv
+  - py-opencv
+  - conda-forge::ffmpeg
+  - ffmpeg-python
+prefix: [YOUR_SOURCE_PATH]/flynet-looming/env
