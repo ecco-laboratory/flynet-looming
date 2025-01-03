@@ -1,5 +1,5 @@
 # flynet-looming
-code for paper: "Visual looming is a primitive for human emotion", Thieu, Ayzenberg, Lourenco, & Kragel (2024) iScience
+code for [paper](https://www.cell.com/iscience/fulltext/S2589-0042(24)01108-8): "Visual looming is a primitive for human emotion", Thieu, Ayzenberg, Lourenco, & Kragel (2024) iScience
 
 Please post any questions about the analysis repository as repo issues and we'll get to you as soon as we can. Enjoy!
 
